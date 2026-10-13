@@ -1,0 +1,10 @@
+// Clamp into a range — the shape of every validated input ever written.
+spec clamp(v: int[0..255], lo: int[0..255], hi: int[0..255])
+  returns (r: int[0..255])
+  requires lo <= hi
+  ensures  r >= lo
+  ensures  r <= hi
+  ensures  if v >= lo && v <= hi then r == v else r == if v < lo then lo else hi
+  example (50, 10, 20) => (20)
+  example (15, 10, 20) => (15)
+  example (5, 10, 20) => (10)

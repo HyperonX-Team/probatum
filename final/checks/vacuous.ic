@@ -1,0 +1,4 @@
+spec vacuous(a: int[0..15]) returns (r: int[0..16])
+  requires a > 999
+  ensures  r == a + 1
+{ r := a + 1; }

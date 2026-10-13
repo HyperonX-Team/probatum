@@ -310,3 +310,92 @@ fn vacuous_spec_is_refused() {
         combined
     );
 }
+
+#[test]
+fn negative_domains_cross_validate() {
+    // Regression: negative ranges exercise sign-extension and the
+    // MSB-flip signed comparator in the bitblaster. Added after a manual
+    // probe found this path untested.
+    let dir = workspace("negative");
+    let spec_path = dir.join("negative_math.ic");
+    std::fs::write(
+        &spec_path,
+        r#"
+        spec negative_math(a: int[-8..7], b: int[-8..7]) returns (r: int[-32..31])
+          ensures r == a - b + a
+          ensures r == 2 * a - b
+          example (-8, 7) => (-23)
+          example (7, -8) => (22)
+        {
+          r := a - b + a;
+        }
+        "#,
+    )
+    .unwrap();
+    let out_dir = dir.join("build");
+    let compile = ic_bin()
+        .args([
+            "compile",
+            spec_path.to_str().unwrap(),
+            "--out",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&compile.stderr);
+    assert!(compile.status.success(), "{}", stderr);
+    assert!(stderr.contains("verdict: PROVED"), "{}", stderr);
+    assert!(
+        stderr.contains("cross-validated"),
+        "negative domains must be proved by BOTH engines: {}",
+        stderr
+    );
+}
+
+#[test]
+fn cegis_refinement_loop_recovers_from_prover_refutation() {
+    // The genuine CEGIS loop: written as TWO INEQUALITIES so definitional
+    // and piecewise extraction both fail and enumeration must run. The first
+    // candidate (r == a) passes the given examples but the PROVER refutes it
+    // at a=5; the loop must solve for the witness there and resume until the
+    // synthesized program is certified.
+    let dir = workspace("cegis");
+    let spec_path = dir.join("cegis_step.ic");
+    std::fs::write(
+        &spec_path,
+        r#"
+        spec cegis_step(a: int[0..7]) returns (r: int[0..10])
+          ensures r >= if a < 4 then a else 10
+          ensures r <= if a < 4 then a else 10
+          example (1) => (1)
+          example (2) => (2)
+        "#,
+    )
+    .unwrap();
+    let out_dir = dir.join("build");
+    let compile = ic_bin()
+        .args([
+            "compile",
+            spec_path.to_str().unwrap(),
+            "--out",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&compile.stderr);
+    assert!(compile.status.success(), "{}", stderr);
+    assert!(stderr.contains("verdict: PROVED"), "{}", stderr);
+    // Must have needed more than one round: the first candidate is refuted.
+    assert!(
+        stderr.contains("CEGIS round(s)") && !stderr.contains("in 1 CEGIS round(s), 0 candidate"),
+        "expected a real refinement loop, not a straight extraction: {}",
+        stderr
+    );
+    // The synthesized program must be the conditional, not r == a.
+    let dsl = std::fs::read_to_string(out_dir.join("cegis_step.ic")).unwrap();
+    assert!(
+        dsl.contains("if") && dsl.contains("then"),
+        "synthesized program should be the conditional: {}",
+        dsl
+    );
+}

@@ -1,0 +1,4 @@
+spec off_by_one(a: int[0..15]) returns (r: int[0..16])
+  requires a < 15
+  ensures  r == a + 1
+{ r := a; }

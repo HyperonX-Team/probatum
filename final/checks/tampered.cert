@@ -1,0 +1,12 @@
+ic-cert-1
+spec: max_value
+spec-sha256: bc4bd2974870e89449d50ccab2ddac4d1ec190975e272aec3fdf3610d5b21728
+program-sha256: 19530ac8cd48ff71a84b6dd237775168dd0a96e28d0bf432b98ccda14da0409d
+verdict: Proved
+cross-validated: true
+precondition: SATISFIABLE
+witness: a=0, b=0
+engine: exhaustive verdict=Proved checked=16385
+engine: bdd-symbolic verdict=Proved checked=65536 nodes=1924
+cert-sha256: 033af672409ef7415db8c48e69624d49c8555bc183aa0df99a9111309a88e0fa
+

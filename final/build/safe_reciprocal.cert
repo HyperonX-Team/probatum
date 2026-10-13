@@ -1,0 +1,11 @@
+ic-cert-1
+spec: safe_reciprocal
+spec-sha256: 45da9a390d226282b23b6cfe3f95bd1885c471f687219d3b956e97a9d0c62ace
+program-sha256: 4c6ca743a364e7a319fcf2b44dd738d2ee9ac6bb61c629c82bdf363ed7b59640
+verdict: Proved
+cross-validated: false
+precondition: SATISFIABLE
+witness: a=0, b=1
+engine: exhaustive verdict=Proved checked=65280
+engine: bdd-symbolic verdict=GaveUp { reason: "unsupported fragment: division/modulo" } checked=0
+cert-sha256: c31869280b59e1b3689a6aa5947a92191826c42647eeb981d54bb6283dc5240d

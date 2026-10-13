@@ -331,32 +331,39 @@ fn check_vacuity(
 
 fn bdd_pre_sat(spec: &Spec, budget: usize) -> Result<Option<Vec<(String, i64)>>, String> {
     let mut bdd = Bdd::new(budget);
-    let mut bb = BitBlaster::new(&mut bdd);
-    let mut env = std::collections::HashMap::new();
-    let mut named = Vec::new();
-    for p in &spec.params {
-        let r = match p.ty {
-            Type::Int(r) => r,
-            Type::Bool => return Err("bool params unsupported".into()),
-        };
-        let v = bb.param_bits(r).map_err(|e| e.to_string())?;
-        env.insert(p.name.clone(), IVal_clone(&v));
-        named.push((p.name.clone(), v));
-    }
-    let mut pre = crate::bdd::TRUE;
-    for clause in &spec.requires {
-        let c = bb.blast_bool(clause, &env).map_err(|e| e.to_string())?;
-        pre = bb
-            .bdd
-            .and(pre, c.val)
-            .map_err(|e: crate::bdd::BddError| e.to_string())?;
-    }
-    let _ = &mut bb; // bdd borrow released for reads below
+    let (pre, named) = {
+        let mut bb = BitBlaster::new(&mut bdd);
+        let mut env = std::collections::HashMap::new();
+        // Interleaved variable ordering (Bryant): keeps arithmetic local.
+        let ranges: Vec<IntRange> = spec
+            .params
+            .iter()
+            .map(|p| match p.ty {
+                Type::Int(r) => r,
+                Type::Bool => IntRange::new(0, 1),
+            })
+            .collect();
+        let vals = bb.param_bits_interleaved(&ranges).map_err(|e| e.to_string())?;
+        let mut named = Vec::new();
+        for (p, v) in spec.params.iter().zip(vals) {
+            env.insert(p.name.clone(), ival_clone(&v));
+            named.push((p.name.clone(), v));
+        }
+        let mut pre = crate::bdd::TRUE;
+        for clause in &spec.requires {
+            let c = bb.blast_bool(clause, &env).map_err(|e| e.to_string())?;
+            pre = bb
+                .bdd
+                .and(pre, c.val)
+                .map_err(|e: crate::bdd::BddError| e.to_string())?;
+        }
+        (pre, named)
+    };
     if !bdd_sat(&bdd, pre) {
         return Ok(None);
     }
     let assign = bdd_one_sat(&bdd, pre);
-    Ok(Some(decode_params(spec, &named, &assign)))
+    Ok(Some(decode_params(spec, &named, &assign, &bdd)))
 }
 
 // Small indirections so prove.rs doesn't reach into Bdd internals directly.
@@ -368,7 +375,7 @@ fn bdd_one_sat(b: &Bdd, f: u32) -> std::collections::HashMap<u32, bool> {
 }
 
 use crate::bitblast::IVal as _IVal;
-fn IVal_clone(v: &_IVal) -> _IVal {
+fn ival_clone(v: &_IVal) -> _IVal {
     _IVal {
         bits: v.bits.clone(),
         fault: v.fault,
@@ -380,31 +387,31 @@ fn decode_params(
     spec: &Spec,
     named: &[(String, _IVal)],
     assign: &std::collections::HashMap<u32, bool>,
+    bdd: &Bdd,
 ) -> Vec<(String, i64)> {
-    // We need the variable indices each param occupies. BitBlaster assigns
-    // them sequentially starting at 0, so reconstruct the layout.
-    let mut next = 0u32;
+    // Each bit node carries its own variable index, so this decodes
+    // correctly under ANY allocation order (param-major or interleaved).
     let mut out = Vec::new();
     for (name, v) in named {
         let mut val: i64 = 0;
         let w = v.bits.len();
-        for i in 0..w {
-            // Constant bits (terminals) are TRUE/FALSE directly.
-            let node = v.bits[i];
+        for (i, &node) in v.bits.iter().enumerate() {
             let bit = if node == crate::bdd::FALSE {
                 false
             } else if node == crate::bdd::TRUE {
                 true
             } else {
-                *assign.get(&next).unwrap_or(&false)
+                match bdd.var_of(node) {
+                    Some(var) => *assign.get(&var).unwrap_or(&false),
+                    None => false, // unreachable for fresh variable nodes
+                }
             };
             if bit {
                 val |= 1i64 << i;
             }
-            next += 1;
         }
         // Sign-extend.
-        if val & (1i64 << (w - 1)) != 0 {
+        if w > 0 && val & (1i64 << (w - 1)) != 0 {
             val |= -1i64 << w;
         }
         out.push((name.clone(), val));
@@ -517,14 +524,24 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
     let (bad, vars_used, named) = {
         let mut bb = BitBlaster::new(&mut bdd);
         let mut env = std::collections::HashMap::new();
-        let mut named: Vec<(String, _IVal)> = Vec::new();
-        for p in &spec.params {
-            let r = match p.ty {
+        // Interleaved variable ordering — see bitblast::param_bits_interleaved.
+        let ranges: Vec<IntRange> = spec
+            .params
+            .iter()
+            .map(|p| match p.ty {
                 Type::Int(r) => r,
-                Type::Bool => return Err("bool params unsupported".into()),
-            };
-            let v = bb.param_bits(r).map_err(|e: BlastError| e.to_string())?;
-            env.insert(p.name.clone(), IVal_clone(&v));
+                Type::Bool => IntRange::new(0, 1),
+            })
+            .collect();
+        let vals = bb
+            .param_bits_interleaved(&ranges)
+            .map_err(|e: BlastError| e.to_string())?;
+        let mut named: Vec<(String, _IVal)> = Vec::new();
+        for (p, v) in spec.params.iter().zip(vals) {
+            if matches!(p.ty, Type::Bool) {
+                return Err("bool params unsupported".into());
+            }
+            env.insert(p.name.clone(), ival_clone(&v));
             named.push((p.name.clone(), v));
         }
         let bad = bb
@@ -551,7 +568,9 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
     // Extract a concrete counterexample and CONFIRM it with the reference
     // evaluator — a BDD bug must not produce a bogus certificate.
     let assign = bdd_one_sat(&bdd, bad);
-    let decoded = decode_params(spec, &named, &assign);
+    let decoded = decode_params(spec, &named, &assign, &bdd);
+    // How much of the domain is bad? (Level-aware counting; may saturate.)
+    let violating = bdd.count_sat(bad, vars_used);
 
     // Confirm against the evaluator.
     let inputs: Vec<i64> = spec
@@ -578,6 +597,10 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
             notes: vec![
                 "counterexample extracted from BDD and independently confirmed by the evaluator"
                     .into(),
+                format!(
+                    "≈{} of the encoded input assignments violate the contract",
+                    violating
+                ),
             ],
         }),
         Ok(_) => {
@@ -1009,6 +1032,28 @@ mod tests {
             matches!(bdd.verdict, Verdict::GaveUp { .. }),
             "BDD should decline division, not guess"
         );
+    }
+
+    #[test]
+    fn cross_validates_chained_arithmetic() {
+        // Regression: `a + 1 + 0 - 1` has an intermediate ([1..16], 7 bits)
+        // WIDER than the final static range ([0..15], 6 bits). The bitblaster
+        // once sized circuits from the result range alone and tripped its own
+        // assertion. Now it must prove and cross-validate.
+        let s = parse(
+            r#"
+            spec chain(a: int[0..15]) returns (r: int[0..16])
+              ensures r == a + 1 + 0 - 1 + 1
+              example (5) => (6)
+            { r := a + 1 + 0 - 1 + 1; }
+            "#,
+        )
+        .unwrap();
+        crate::sema::analyze(&s).unwrap();
+        let body = s.body.clone().unwrap();
+        let r = prove(&s, &body, &ProverOptions::default());
+        assert_eq!(r.verdict, Verdict::Proved, "engines: {:?}", r.engines);
+        assert!(r.cross_validated, "both engines must agree on chains");
     }
 
     #[test]

@@ -1,0 +1,11 @@
+ic-cert-1
+spec: clamp
+spec-sha256: 60c15d371ba54f19ca09de25b9ecf6025aa9ca2ae7979c3689b304779dc740cf
+program-sha256: 13897ac62dbc623ca4d68e9731ee8be38b52bd1856a928074192999acf1153e4
+verdict: Proved
+cross-validated: true
+precondition: SATISFIABLE
+witness: v=0, lo=0, hi=0
+engine: exhaustive verdict=Proved checked=8421376
+engine: bdd-symbolic verdict=Proved checked=134217728 nodes=14628
+cert-sha256: 5241ca103878b51f2c66ae34f234f143b2c11f25ec0c67ee97b2fb454d024aa6

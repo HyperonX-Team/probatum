@@ -50,6 +50,17 @@ pub enum SynthError {
     Cycle { message: String },
 }
 
+impl SynthError {
+    /// When synthesis proves the *spec itself* is impossible, this is the
+    /// input where no output can satisfy the contract. Callers surface it.
+    pub fn unrealizable_input(&self) -> Option<&[(String, i64)]> {
+        match self {
+            SynthError::Unrealizable { inputs, .. } => Some(inputs),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for SynthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -73,9 +84,6 @@ pub struct SynthStats {
 pub struct Synthesis {
     pub body: Vec<Assign>,
     pub stats: SynthStats,
-    /// The final proof verdict (synthesis insists on Proved).
-    pub verdict: Verdict,
-    pub cross_validated: bool,
 }
 
 const MAX_SIZE: usize = 6;
@@ -103,7 +111,7 @@ pub fn synthesize(spec: &Spec, opts: &ProverOptions) -> Result<Synthesis, SynthE
     // Observational sample inputs: examples first, then deterministic extras.
     let sample_inputs = build_sample_inputs(spec, &examples);
 
-    let mut definitional = extract_definitions(spec)?;
+    let definitional = extract_definitions(spec)?;
 
     let mut cegis_round = 0;
     loop {
@@ -186,12 +194,7 @@ pub fn synthesize(spec: &Spec, opts: &ProverOptions) -> Result<Synthesis, SynthE
         let proof = prove::prove(spec, &body, opts);
         match proof.verdict {
             Verdict::Proved => {
-                return Ok(Synthesis {
-                    body,
-                    stats,
-                    verdict: Verdict::Proved,
-                    cross_validated: proof.cross_validated,
-                });
+                return Ok(Synthesis { body, stats });
             }
             Verdict::Violated => {
                 stats.prover_refutations += 1;
@@ -370,6 +373,27 @@ fn extract_definitions(spec: &Spec) -> Result<HashMap<String, Expr>, SynthError>
         defs.entry(name).or_insert(expr);
     }
 
+    // Pass 1b: piecewise definitions. `if c then (r == a) else (r == b)`
+    // (with arbitrarily nested ifs) is a perfectly good definition of r:
+    // r := if c then a else b. Real intent is full of these ("clamp",
+    // "if valid then value else default"), so recognizing them turns whole
+    // classes of specs from "enumeration required" into "extraction".
+    for clause in &spec.ensures {
+        if !matches!(clause, Expr::Ite(_, _, _)) {
+            continue;
+        }
+        for r in &spec.results {
+            if defs.contains_key(&r.name) {
+                continue;
+            }
+            if let Some(e) = piecewise_definition(clause, &r.name, spec) {
+                if !mentions_result(&e) && !mentions_bare_result(&e, spec) {
+                    defs.insert(r.name.clone(), e);
+                }
+            }
+        }
+    }
+
     // Pass 2: transitively substitute defined results until fixpoint.
     for _ in 0..spec.results.len() + 1 {
         let snapshot: HashMap<String, Expr> = defs.clone();
@@ -449,6 +473,54 @@ fn subst_results_deep(e: &Expr, defs: &HashMap<String, Expr>, spec: &Spec) -> Ex
     }
 }
 
+/// Recognize a piecewise definition of `result_name`:
+/// `if c then (r == a) else (r == b)` ⇒ the expression `if c then a else b`.
+/// Recurses through nested `if`s. Returns `None` when any branch doesn't
+/// define `r` (then it isn't a definition, and we don't guess).
+fn piecewise_definition(e: &Expr, result_name: &str, spec: &Spec) -> Option<Expr> {
+    let defines = |x: &Expr| -> bool {
+        matches!(x, Expr::Result(n) if n == result_name)
+            || matches!(x, Expr::Param(n) if n == result_name && spec.results.iter().any(|b| b.name == *n))
+    };
+    match e {
+        Expr::Binary(BinOp::Eq, l, r) => {
+            if defines(l) && !mentions_named(r, result_name, spec) {
+                Some((**r).clone())
+            } else if defines(r) && !mentions_named(l, result_name, spec) {
+                Some((**l).clone())
+            } else {
+                None
+            }
+        }
+        Expr::Ite(c, a, b) => {
+            let ra = piecewise_definition(a, result_name, spec)?;
+            let rb = piecewise_definition(b, result_name, spec)?;
+            Some(Expr::Ite(c.clone(), Box::new(ra), Box::new(rb)))
+        }
+        _ => None,
+    }
+}
+
+/// Does `e` mention `name` as a result reference?
+fn mentions_named(e: &Expr, name: &str, spec: &Spec) -> bool {
+    match e {
+        Expr::Result(n) | Expr::Param(n) => {
+            n == name && spec.results.iter().any(|b| b.name == *n)
+        }
+        Expr::Unary(_, a) => mentions_named(a, name, spec),
+        Expr::Binary(_, l, r) => mentions_named(l, name, spec) || mentions_named(r, name, spec),
+        Expr::Ite(c, a, b) => {
+            mentions_named(c, name, spec)
+                || mentions_named(a, name, spec)
+                || mentions_named(b, name, spec)
+        }
+        Expr::Min(a, b) | Expr::Max(a, b) => {
+            mentions_named(a, name, spec) || mentions_named(b, name, spec)
+        }
+        _ => false,
+    }
+}
+
 fn mentions_result(e: &Expr) -> bool {
     match e {
         Expr::Result(_) => true,
@@ -457,32 +529,6 @@ fn mentions_result(e: &Expr) -> bool {
         Expr::Ite(c, a, b) => mentions_result(c) || mentions_result(a) || mentions_result(b),
         Expr::Min(a, b) | Expr::Max(a, b) => mentions_result(a) || mentions_result(b),
         _ => false,
-    }
-}
-
-fn subst_results(e: &Expr, defs: &HashMap<String, Expr>) -> Expr {
-    match e {
-        Expr::Result(n) => defs.get(n).cloned().unwrap_or_else(|| e.clone()),
-        Expr::Unary(op, a) => Expr::Unary(*op, Box::new(subst_results(a, defs))),
-        Expr::Binary(op, l, r) => Expr::Binary(
-            *op,
-            Box::new(subst_results(l, defs)),
-            Box::new(subst_results(r, defs)),
-        ),
-        Expr::Ite(c, a, b) => Expr::Ite(
-            Box::new(subst_results(c, defs)),
-            Box::new(subst_results(a, defs)),
-            Box::new(subst_results(b, defs)),
-        ),
-        Expr::Min(a, b) => Expr::Min(
-            Box::new(subst_results(a, defs)),
-            Box::new(subst_results(b, defs)),
-        ),
-        Expr::Max(a, b) => Expr::Max(
-            Box::new(subst_results(a, defs)),
-            Box::new(subst_results(b, defs)),
-        ),
-        _ => e.clone(),
     }
 }
 
@@ -596,8 +642,6 @@ fn enumerate_result(
     // Seen-signature sets per sort.
     let mut seen_int: HashSet<Signature> = HashSet::new();
     let mut seen_bool: HashSet<Signature> = HashSet::new();
-    let mut checked_target = 0u64;
-
     // Acceptance: the candidate must match every example output at this index.
     let accepts = |e: &Expr| -> bool {
         if examples.is_empty() {
@@ -995,7 +1039,7 @@ mod tests {
         analyze(&s).unwrap();
         let opts = ProverOptions::default();
         let synth = synthesize(&s, &opts).expect("should synthesize");
-        assert_eq!(synth.verdict, Verdict::Proved);
+        // synthesize() returns Err unless the prover said Proved.
         assert_eq!(synth.body.len(), 1);
     }
 
@@ -1015,7 +1059,7 @@ mod tests {
         analyze(&s).unwrap();
         let opts = ProverOptions::default();
         let synth = synthesize(&s, &opts).expect("should synthesize max");
-        assert_eq!(synth.verdict, Verdict::Proved);
+        // synthesize() returns Err unless the prover said Proved.
         // The enumerator may find `max(a, b)` or an equivalent ite — both are
         // correct; what matters is that the PROVER certified it. Accept either.
         let v = synth.body[0].value.to_string();
@@ -1041,7 +1085,12 @@ mod tests {
         analyze(&s).unwrap();
         let opts = ProverOptions::default();
         let synth = synthesize(&s, &opts).expect("should synthesize min");
-        assert_eq!(synth.verdict, Verdict::Proved);
+        // synthesize() returns Err unless the prover said Proved.
+        assert!(
+            synth.body[0].value.to_string().contains("min"),
+            "expected the min builtin, got {}",
+            synth.body[0].value
+        );
     }
 
     #[test]
@@ -1081,6 +1130,10 @@ mod tests {
         analyze(&s).unwrap();
         let opts = ProverOptions::default();
         let synth = synthesize(&s, &opts).expect("should find 2*a");
-        assert_eq!(synth.verdict, Verdict::Proved);
+        // synthesize() returns Err unless the prover said Proved. The exact
+        // shape is the synthesizer's choice (`a + a` is cheaper than `2 * a`
+        // and observationally identical) — we only pin down the value here.
+        assert_eq!(synth.body.len(), 1);
+        assert_eq!(synth.body[0].name, "r");
     }
 }

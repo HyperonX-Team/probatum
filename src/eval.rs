@@ -35,12 +35,6 @@ impl Value {
             Value::Bool(_) => None,
         }
     }
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Value::Bool(b) => Some(*b),
-            Value::Int(_) => None,
-        }
-    }
 }
 
 impl std::fmt::Display for Value {
@@ -360,15 +354,6 @@ pub fn check_examples(
                 _ => Some((i, ex.inputs.clone(), got, ex.outputs.clone())),
             }
         })
-        .collect()
-}
-
-/// Interpret a single example through the *intent* (not the program):
-/// used to derive definitional constraints during synthesis.
-pub fn example_map(spec: &Spec) -> Vec<(Vec<i64>, Vec<i64>)> {
-    spec.examples
-        .iter()
-        .map(|e| (e.inputs.clone(), e.outputs.clone()))
         .collect()
 }
 

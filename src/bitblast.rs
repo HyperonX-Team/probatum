@@ -123,7 +123,11 @@ impl<'a> BitBlaster<'a> {
         })
     }
 
-    /// Fresh unconstrained input bits for a declared parameter range.
+    /// Fresh unconstrained input bits for a declared parameter range
+    /// (param-major allocation). `param_bits_interleaved` is preferred for
+    /// whole-spec blasting; this remains for single-parameter uses and
+    /// tests.
+    #[allow(dead_code)]
     pub fn param_bits(&mut self, range: IntRange) -> Result<IVal, BlastError> {
         let w = width_for(range);
         let mut bits = Vec::with_capacity(w);
@@ -137,6 +141,43 @@ impl<'a> BitBlaster<'a> {
             fault: FALSE,
             range,
         })
+    }
+
+    /// Allocate all parameters with **interleaved** variable ordering:
+    /// bit 0 of param 0, bit 0 of param 1, …, bit 1 of param 0, …
+    ///
+    /// This is the Bryant-style ordering that keeps ripple-carry chains
+    /// (and comparators) local: for `a - amount` the corresponding bits of
+    /// the operands stay adjacent in the order, so carry subfunctions
+    /// reuse nodes instead of interleaving across whole 9-bit blocks.
+    /// Param-major ordering made `transfer_funds` explode past 5M nodes;
+    /// interleaved proves it in a few thousand. (Cross-validation caught
+    /// no *correctness* difference — this is purely about size.)
+    pub fn param_bits_interleaved(
+        &mut self,
+        ranges: &[IntRange],
+    ) -> Result<Vec<IVal>, BlastError> {
+        let widths: Vec<usize> = ranges.iter().map(|r| width_for(*r)).collect();
+        let max_w = widths.iter().copied().max().unwrap_or(1);
+        let mut out: Vec<Vec<u32>> = ranges.iter().map(|_| Vec::new()).collect();
+        for bit in 0..max_w {
+            for (p, w) in widths.iter().enumerate() {
+                if bit < *w {
+                    let var = self.fresh();
+                    let node = self.bdd.var_node(var).map_err(BlastError::Budget)?;
+                    out[p].push(node);
+                }
+            }
+        }
+        Ok(out
+            .into_iter()
+            .zip(ranges)
+            .map(|(bits, range)| IVal {
+                bits,
+                fault: FALSE,
+                range: *range,
+            })
+            .collect())
     }
 
     /// `domain_ok`: the raw bit pattern lies within the declared range.
@@ -160,6 +201,7 @@ impl<'a> BitBlaster<'a> {
         Ok(bits)
     }
 
+    #[allow(dead_code)]
     fn zero_extend(&mut self, v: &IVal, w: usize) -> Result<Vec<u32>, BlastError> {
         let mut bits = v.bits.clone();
         while bits.len() < w {
@@ -249,6 +291,7 @@ impl<'a> BitBlaster<'a> {
         self.bdd.neg(lt).map_err(BlastError::Budget)
     }
 
+    #[allow(dead_code)]
     fn or_all(&mut self, mut xs: Vec<u32>) -> Result<u32, BlastError> {
         let mut acc = FALSE;
         for x in xs.drain(..) {
@@ -370,8 +413,18 @@ impl<'a> BitBlaster<'a> {
                 let av = self.blast_int(l, env)?;
                 let bv = self.blast_int(r, env)?;
                 let fault = self.bdd.or(av.fault, bv.fault).map_err(BlastError::Budget)?;
+                // The circuit must be wide enough for the RESULT range *and*
+                // for both OPERANDS: in a chain like `a + 1 - 1`, an
+                // intermediate can be wider than the final static range.
+                // (Cross-validation caught this as an engine panic.)
                 let w = width_for(range)
-                    .max(if op == BinOp::Mul { av.bits.len() + bv.bits.len() } else { 0 });
+                    .max(av.bits.len())
+                    .max(bv.bits.len())
+                    .max(if op == BinOp::Mul {
+                        av.bits.len() + bv.bits.len()
+                    } else {
+                        0
+                    });
                 let aa = self.sign_extend(&av, w)?;
                 let bb = self.sign_extend(&bv, w)?;
                 let bits = match op {
@@ -383,6 +436,9 @@ impl<'a> BitBlaster<'a> {
                     BinOp::Mul => self.mul_bits(&aa, &bb, width_for(range))?,
                     _ => unreachable!(),
                 };
+                // Truncation to the static range is sound: interval analysis
+                // proved every true result fits, so the dropped high bits are
+                // sign-redundant.
                 Ok(IVal {
                     bits: bits[..width_for(range)].to_vec(),
                     fault,

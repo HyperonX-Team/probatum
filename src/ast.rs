@@ -32,12 +32,6 @@ impl IntRange {
     pub fn contains(&self, v: i64) -> bool {
         v >= self.lo && v <= self.hi
     }
-
-    /// Bits needed to encode this range as an unsigned offset (value - lo).
-    pub fn bits(&self) -> u32 {
-        let span = (self.size() - 1) as u64;
-        (64 - span.leading_zeros()).max(1)
-    }
 }
 
 impl fmt::Display for IntRange {
@@ -191,10 +185,6 @@ pub struct Spec {
 }
 
 impl Spec {
-    pub fn param_index(&self, name: &str) -> Option<usize> {
-        self.params.iter().position(|b| b.name == name)
-    }
-
     pub fn result_index(&self, name: &str) -> Option<usize> {
         self.results.iter().position(|b| b.name == name)
     }
@@ -211,17 +201,6 @@ impl Spec {
     }
 }
 
-/// Pretty-print a program (list of assignments) in canonical form.
-pub fn render_program(assigns: &[Assign]) -> String {
-    let mut out = String::new();
-    for a in assigns {
-        out.push_str("  ");
-        out.push_str(&a.to_string());
-        out.push('\n');
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,11 +209,10 @@ mod tests {
     fn range_basics() {
         let r = IntRange::new(0, 255);
         assert_eq!(r.size(), 256);
-        assert_eq!(r.bits(), 8);
         assert!(r.contains(0) && r.contains(255) && !r.contains(256));
         let neg = IntRange::new(-100, 100);
         assert_eq!(neg.size(), 201);
-        assert!(neg.bits() >= 8);
+        assert!(neg.contains(-100) && neg.contains(100) && !neg.contains(101));
     }
 
     #[test]

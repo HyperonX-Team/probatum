@@ -18,3 +18,9 @@ path = "src/main.rs"
 [profile.release]
 lto = true
 codegen-units = 1
+
+# Integration tests invoke the real `ic` binary and enumerate millions of
+# inputs; without optimization a single test run takes ~9 minutes. Tests
+# exercise the same code — only faster.
+[profile.test]
+opt-level = 2

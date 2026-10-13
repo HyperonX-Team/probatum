@@ -48,8 +48,11 @@ impl std::fmt::Display for BddError {
 pub struct Bdd {
     nodes: Vec<Node>,
     unique: HashMap<Node, u32>,
-    /// Memo for primitive ops: (op, a, b) -> result.
-    cache: HashMap<(u8, u32, u32), u32>,
+    /// Memo for primitive ops: (op, a, b, c) -> result. `c` is used only by
+    /// the ternary `ite` (op 1); binary ops leave it 0. A 3-tuple key would
+    /// silently truncate one of ite's arguments and return wrong nodes —
+    /// caught by cross-validation, fixed here.
+    cache: HashMap<(u8, u32, u32, u32), u32>,
     budget: usize,
 }
 
@@ -79,11 +82,15 @@ impl Bdd {
         self.nodes.len()
     }
 
-    pub fn is_true(&self, f: u32) -> bool {
-        f == TRUE
-    }
-    pub fn is_false(&self, f: u32) -> bool {
-        f == FALSE
+    /// The variable index of a node (None for terminals). Lets callers
+    /// decode assignments without knowing the allocation order.
+    pub fn var_of(&self, node: u32) -> Option<u32> {
+        let n = &self.nodes[node as usize];
+        if n.var == u32::MAX {
+            None
+        } else {
+            Some(n.var)
+        }
     }
 
     /// A fresh variable node: var → (low=FALSE, high=TRUE), i.e. the
@@ -136,14 +143,14 @@ impl Bdd {
         if a == TRUE {
             return Ok(FALSE);
         }
-        if let Some(&r) = self.cache.get(&(0, a, 0)) {
+        if let Some(&r) = self.cache.get(&(0, a, 0, 0)) {
             return Ok(r);
         }
         let node = self.nodes[a as usize];
         let low = self.neg(node.low)?;
         let high = self.neg(node.high)?;
         let r = self.mk(node.var, low, high)?;
-        self.cache.insert((0, a, 0), r);
+        self.cache.insert((0, a, 0, 0), r);
         Ok(r)
     }
 
@@ -164,7 +171,7 @@ impl Bdd {
         if t == FALSE && e == TRUE {
             return self.neg(i);
         }
-        if let Some(&r) = self.cache.get(&(1, i, ((t as u64) << 32 | e as u64) as u32)) {
+        if let Some(&r) = self.cache.get(&(1, i, t, e)) {
             return Ok(r);
         }
         // Shannon: ite(i,t,e) = (i ∧ t) ∨ (¬i ∧ e)
@@ -176,7 +183,7 @@ impl Bdd {
         let hi = self.ite(i_hi, t_hi, e_hi)?;
         let lo = self.ite(i_lo, t_lo, e_lo)?;
         let r = self.mk(top, lo, hi)?;
-        self.cache.insert((1, i, ((t as u64) << 32 | e as u64) as u32), r);
+        self.cache.insert((1, i, t, e), r);
         Ok(r)
     }
 
@@ -213,7 +220,7 @@ impl Bdd {
         if b == TRUE || a == b {
             return Ok(a);
         }
-        if let Some(&r) = self.cache.get(&(2, a, b)) {
+        if let Some(&r) = self.cache.get(&(2, a, b, 0)) {
             return Ok(r);
         }
         let top = self.nodes[a as usize].var.min(self.nodes[b as usize].var);
@@ -222,8 +229,8 @@ impl Bdd {
         let hi = self.and(a_hi, b_hi)?;
         let lo = self.and(a_lo, b_lo)?;
         let r = self.mk(top, lo, hi)?;
-        self.cache.insert((2, a, b), r);
-        self.cache.insert((2, b, a), r);
+        self.cache.insert((2, a, b, 0), r);
+        self.cache.insert((2, b, a, 0), r);
         Ok(r)
     }
 
@@ -356,8 +363,6 @@ mod tests {
     #[test]
     fn terminals_and_negation() {
         let mut b = Bdd::new(1000);
-        assert!(b.is_false(FALSE));
-        assert!(b.is_true(TRUE));
         assert_eq!(b.neg(FALSE).unwrap(), TRUE);
         assert_eq!(b.neg(TRUE).unwrap(), FALSE);
         let f = b.neg(FALSE).unwrap();

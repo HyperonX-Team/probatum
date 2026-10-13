@@ -384,7 +384,15 @@ fn cmd_compile(args: &[String]) -> ExitCode {
     }
     written.push(cert_path);
 
-    for lang_name in &o.emit {
+    // The DSL artifact is ALWAYS written, even if not requested: it embeds
+    // the program, and `ic verify` needs it to re-derive the proof against
+    // the certificate. Requesting `--emit rust,go` must not break verify.
+    let mut targets: Vec<String> = o.emit.clone();
+    if !targets.iter().any(|t| matches!(t.as_str(), "dsl" | "ic")) {
+        targets.push("dsl".into());
+    }
+
+    for lang_name in &targets {
         let Some(lang) = codegen::TargetLang::from_name(lang_name) else {
             eprintln!("ic: unknown target `{}` (want rust, go, or dsl)", lang_name);
             return ExitCode::from(2);

@@ -4,7 +4,7 @@
 //! proved — the earlier we say so, the cheaper the failure.
 
 use crate::ast::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 #[derive(Debug)]
@@ -166,6 +166,29 @@ fn check_expr(
 
 fn compatible(a: &Type, b: &Type) -> bool {
     matches!((a, b), (Type::Int(_), Type::Int(_))) || (a == b && *a == Type::Bool)
+}
+
+/// Public range inference over an environment of parameter ranges.
+///
+/// Used by the bitblaster to size each node's two's-complement width.
+/// Returns `Err` for non-int expressions (bools, unbound names) — the
+/// bitblaster treats that as "declines this fragment".
+pub fn infer_int(
+    e: &Expr,
+    env: HashMap<String, IntRange>,
+) -> Result<IntRange, String> {
+    let bindings: Vec<Binding> = env
+        .iter()
+        .map(|(name, r)| Binding {
+            name: name.clone(),
+            ty: Type::Int(*r),
+        })
+        .collect();
+    match check_expr(e, &bindings, &[], None) {
+        Ok(Type::Int(r)) => Ok(r),
+        Ok(other) => Err(format!("expected int, got `{}`", other)),
+        Err(se) => Err(se.message),
+    }
 }
 
 fn join(a: &Type, b: &Type) -> Type {

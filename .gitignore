@@ -1,3 +1,5 @@
 /target
 /build
+/final
+/probe
 **/*.rs.bk

@@ -1,8 +1,0 @@
-// Two-of-three majority — the workhorse of fault-tolerant systems,
-// expressed as properties and synthesized into code.
-spec consensus(v1: int[0..1], v2: int[0..1], v3: int[0..1])
-  returns (r: int[0..1])
-  ensures  r == if v1 + v2 + v3 >= 2 then 1 else 0
-  example (1, 1, 0) => (1)
-  example (1, 0, 0) => (0)
-  example (1, 1, 1) => (1)

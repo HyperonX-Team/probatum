@@ -1,4 +1,0 @@
-spec big(a: int[0..2000000]) returns (r: int[0..2000001])
-  requires a < 2000000
-  ensures  r == a + 1
-{ r := a + 1; }

@@ -1,8 +1,0 @@
-// Subtraction that clamps at zero — never goes negative.
-// No body: ic synthesizes one that satisfies the contract for ALL inputs.
-spec saturating_sub(a: int[0..255], b: int[0..255])
-  returns (r: int[0..255])
-  ensures  r == if a >= b then a - b else 0
-  ensures  r <= a
-  example (10, 3) => (7)
-  example (3, 10) => (0)

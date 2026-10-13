@@ -765,6 +765,23 @@ spec split_bill(total: dec<2>[0..100000], people: int[1..100])
 }
 "#,
     ),
+    (
+        "big_range.ic",
+        r#"// BIG RANGES. Two billion values per parameter: 4 x 10^18 states. Far too
+// many to enumerate — so the enumerating engine declines (with a reason,
+// not a guess) and the symbolic engine reasons about all of them at once.
+spec big_range(x: int[0..2000000000], y: int[0..2000000000])
+  returns (total: int[0..4000000000], diff: int[-2000000000..2000000000])
+  requires x + y <= 4000000000
+  ensures  total == x + y
+  ensures  diff == x - y
+  ensures  total - diff == 2 * y
+{
+  total := x + y;
+  diff := x - y;
+}
+"#,
+    ),
 ];
 
 fn cmd_examples(args: &[String]) -> ExitCode {

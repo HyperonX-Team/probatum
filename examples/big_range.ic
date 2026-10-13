@@ -1,0 +1,20 @@
+// BIG RANGES. Two billion values â€” far too many to enumerate one by one.
+//
+// This is what the symbolic engine is for: it does not walk the domain, it
+// reasons about all of it at once. The enumerating engine honestly declines
+// (with a reason, not a guess) and the BDD decides.
+//
+// The old failure mode for wide arithmetic was BDD blow-up from ripple-carry
+// chains interleaving across whole variable blocks. Interleaved (Bryant)
+// variable ordering fixed that: bit 0 of every operand adjacent, then bit 1,
+// which keeps carries local.
+spec big_range(x: int[0..2000000000], y: int[0..2000000000])
+  returns (total: int[0..4000000000], diff: int[-2000000000..2000000000])
+  requires x + y <= 4000000000
+  ensures  total == x + y
+  ensures  diff == x - y
+  ensures  total - diff == 2 * y
+{
+  total := x + y;
+  diff := x - y;
+}

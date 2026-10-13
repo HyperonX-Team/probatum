@@ -27,11 +27,38 @@
 //! ("proved" nothing). The prover checks that at least one input reaches
 //! the body — and reports the witness — before claiming success.
 
+use crate::ast;
 use crate::ast::*;
 use crate::bdd::Bdd;
 use crate::bitblast::{self, BlastError, BitBlaster};
 use crate::eval;
 use crate::sha256::sha256_hex;
+
+/// Name a flat input vector for human consumption: scalar parameters by
+/// name, array parameters element by element (`a[0]`, `a[1]`, …).
+pub fn describe_inputs(spec: &Spec, inputs: &[i64]) -> Vec<(String, i64)> {
+    let mut out = Vec::new();
+    let mut k = 0usize;
+    for b in &spec.params {
+        match b.ty {
+            Type::Array { index, .. } => {
+                for i in index.lo..=index.hi {
+                    if let Some(v) = inputs.get(k) {
+                        out.push((format!("{}[{}]", b.name, i), *v));
+                    }
+                    k += 1;
+                }
+            }
+            _ => {
+                if let Some(v) = inputs.get(k) {
+                    out.push((b.name.clone(), *v));
+                }
+                k += 1;
+            }
+        }
+    }
+    out
+}
 
 /// What the prover concluded.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,9 +132,212 @@ impl Default for ProverOptions {
     }
 }
 
-/// Prove (or refute) `spec` against `body`.
-pub fn prove(spec: &Spec, body: &[Assign], opts: &ProverOptions) -> ProofResult {
+/// Prove (or refute) `spec` against `prog`.
+///
+/// Two paths, chosen by what the program actually is:
+///
+/// * **Straight-line scalar code** — the original path: evaluate the body on
+///   every input (exhaustive) and bit-blast the contract (BDD).
+/// * **Control flow or arrays** — the Hoare path: execute the program over
+///   the domain *and* discharge the generated verification conditions
+///   symbolically. Two independent methods again, for a different reason:
+///   execution shows the loop behaves; the invariant proof shows it must.
+pub fn prove(spec: &Spec, prog: &Program, opts: &ProverOptions) -> ProofResult {
     let domain = spec.input_domain_size();
+    let straight = ast::as_straight_line(prog).filter(|_| !ast::program_uses_arrays(prog));
+    match straight {
+        Some(body) => prove_straight(spec, &body, opts, domain),
+        None => prove_with_hoare(spec, prog, opts, domain),
+    }
+}
+
+/// The Hoare path: execution over the domain + symbolic obligation discharge.
+fn prove_with_hoare(
+    spec: &Spec,
+    prog: &Program,
+    opts: &ProverOptions,
+    domain: u128,
+) -> ProofResult {
+    let (pre_witness, vacuity_notes) = check_vacuity(spec, &[], opts, domain);
+
+    let mut engines: Vec<EngineReport> = Vec::new();
+    let mut counterexample: Option<Counterexample> = None;
+    let mut notes: Vec<String> = Vec::new();
+
+    // ---- Engine 1: execute the program over the whole domain --------------
+    let mut exec_verdict: Option<Verdict> = None;
+    if opts.engine == "auto" || opts.engine == "exhaustive" {
+        match run_exhaustive(spec, prog, opts.exhaustive_budget) {
+            Ok(report) => {
+                if counterexample.is_none() {
+                    counterexample = report.counterexample.clone();
+                }
+                exec_verdict = Some(report.verdict.clone());
+                let mut n = report.notes.clone();
+                n.push(
+                    "executed the program (loops included) on every in-domain input".into(),
+                );
+                engines.push(EngineReport {
+                    engine: "exhaustive-execution".into(),
+                    verdict: report.verdict,
+                    checked: report.checked,
+                    nodes: None,
+                    notes: n,
+                });
+            }
+            Err(reason) => {
+                engines.push(EngineReport {
+                    engine: "exhaustive-execution".into(),
+                    verdict: Verdict::GaveUp {
+                        reason: reason.clone(),
+                    },
+                    checked: 0,
+                    nodes: None,
+                    notes: vec![reason],
+                });
+            }
+        }
+    }
+
+    // ---- Engine 2: Hoare obligations, discharged symbolically -------------
+    let obs = crate::hoare::obligations(spec, prog);
+    let mut hc_verdict: Option<Verdict> = None;
+    if opts.engine == "auto" || opts.engine == "bdd" || opts.engine == "exhaustive" {
+        let mut all_proved = true;
+        let mut any_ran = false;
+        let mut total_checked: u128 = 0;
+        let mut worst_nodes: u128 = 0;
+        let mut failed: Option<(String, Counstext)> = None;
+        for ob in &obs {
+            let r = check_validity(&ob.vars, &ob.assumptions, &ob.goal, opts);
+            any_ran = true;
+            total_checked += r.engines.iter().map(|e| e.checked).sum::<u128>();
+            for e in &r.engines {
+                if let Some(n) = e.nodes {
+                    worst_nodes = worst_nodes.max(n);
+                }
+            }
+            match &r.verdict {
+                Verdict::Proved => {}
+                Verdict::Violated => {
+                    all_proved = false;
+                    failed = Some((ob.kind.clone(), Counstext {
+                        location: ob.location.clone(),
+                        counterexample: r.counterexample.clone(),
+                        obligation: ob.to_string(),
+                    }));
+                    break;
+                }
+                Verdict::GaveUp { reason } => {
+                    all_proved = false;
+                    notes.push(format!(
+                        "obligation `{}` undecided: {}",
+                        ob.kind, reason
+                    ));
+                    break;
+                }
+                Verdict::NoViolationFound => {
+                    all_proved = false;
+                    notes.push(format!("obligation `{}` only sampled", ob.kind));
+                    break;
+                }
+            }
+        }
+        if any_ran {
+            hc_verdict = Some(if all_proved {
+                Verdict::Proved
+            } else if let Some((kind, ctx)) = &failed {
+                notes.push(format!("FAILED obligation `{}`: {}", kind, ctx.obligation));
+                if counterexample.is_none() {
+                    counterexample = ctx.counterexample.clone();
+                }
+                Verdict::Violated
+            } else {
+                Verdict::GaveUp {
+                    reason: "some obligations were undecided".into(),
+                }
+            });
+        }
+        engines.push(EngineReport {
+            engine: "hoare-verification".into(),
+            verdict: hc_verdict.clone().unwrap_or(Verdict::GaveUp {
+                reason: "no obligations generated".into(),
+            }),
+            checked: total_checked,
+            nodes: Some(worst_nodes),
+            notes: vec![format!(
+                "{} verification condition(s): contract, loop entry/preservation/exit{}",
+                obs.len(),
+                if crate::hoare::has_unproven_termination(prog) {
+                    " (no `decreases` clause given — PARTIAL correctness only)"
+                } else {
+                    ", and termination"
+                }
+            )],
+        });
+    }
+
+    // ---- combine ----------------------------------------------------------
+    let verdict = match (exec_verdict.clone(), hc_verdict.clone()) {
+        (Some(a), Some(b)) if a == b => a,
+        (Some(Verdict::Violated), _) | (_, Some(Verdict::Violated)) => Verdict::Violated,
+        (Some(Verdict::Proved), Some(Verdict::GaveUp { .. })) => Verdict::GaveUp {
+            reason: "execution agrees, but the invariant proof was inconclusive".into(),
+        },
+        (Some(Verdict::GaveUp { .. }), Some(Verdict::Proved)) => Verdict::GaveUp {
+            reason: "invariants proved, but full-domain execution was inconclusive".into(),
+        },
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => Verdict::GaveUp {
+            reason: "no engine could run".into(),
+        },
+        // Any mixed pair that isn't Proved/Proved is not a complete proof.
+        (Some(_), Some(_)) => Verdict::GaveUp {
+            reason: "engines did not both reach a complete verdict".into(),
+        },
+    };
+
+    let verdict = if pre_witness.is_none() {
+        Verdict::GaveUp {
+            reason: format!(
+                "precondition is UNSATISFIABLE (vacuous) — {}",
+                vacuity_notes.join("; ")
+            ),
+        }
+    } else {
+        verdict
+    };
+
+    let cross_validated = matches!(
+        (&exec_verdict, &hc_verdict),
+        (Some(Verdict::Proved), Some(Verdict::Proved))
+    );
+
+    ProofResult {
+        verdict,
+        engines,
+        counterexample,
+        pre_witness,
+        stat_bound: None,
+        cross_validated,
+    }
+}
+
+/// Extra context for a failed obligation (kept out of the public error type).
+struct Counstext {
+    location: String,
+    counterexample: Option<Counterexample>,
+    obligation: String,
+}
+
+/// The straight-line path (unchanged semantics, now fed by the dispatcher).
+fn prove_straight(
+    spec: &Spec,
+    body: &[Assign],
+    opts: &ProverOptions,
+    domain: u128,
+) -> ProofResult {
 
     // ---- Vacuity: does any input reach the body? --------------------------
     // (Complete over the whole domain when feasible; otherwise sampled.)
@@ -127,8 +357,9 @@ pub fn prove(spec: &Spec, body: &[Assign], opts: &ProverOptions) -> ProofResult 
 
     // ---- Engine 1: exhaustive -------------------------------------------
     let mut exhaustive_verdict: Option<Verdict> = None;
+    let prog = ast::assigns_to_program(body);
     if want_exhaustive {
-        match run_exhaustive(spec, body, opts.exhaustive_budget) {
+        match run_exhaustive(spec, &prog, opts.exhaustive_budget) {
             Ok(report) => {
                 if counterexample.is_none() {
                     counterexample = report.counterexample.clone();
@@ -283,14 +514,7 @@ fn check_vacuity(
     // Walk the domain looking for ONE input satisfying `requires`.
     // If the domain is too big, use BDD to decide satisfiability.
     if domain <= opts.exhaustive_budget {
-        let ranges: Vec<IntRange> = spec
-            .params
-            .iter()
-            .map(|b| match b.ty {
-                Type::Int(r) => r,
-                Type::Bool => IntRange::new(0, 1),
-            })
-            .collect();
+        let ranges: Vec<IntRange> = crate::ast::input_domains(spec);
         let mut inputs: Vec<i64> = ranges.iter().map(|r| r.lo).collect();
         loop {
             if eval::precondition_holds(spec, &inputs) {
@@ -335,14 +559,7 @@ fn bdd_pre_sat(spec: &Spec, budget: usize) -> Result<Option<Vec<(String, i64)>>,
         let mut bb = BitBlaster::new(&mut bdd);
         let mut env = std::collections::HashMap::new();
         // Interleaved variable ordering (Bryant): keeps arithmetic local.
-        let ranges: Vec<IntRange> = spec
-            .params
-            .iter()
-            .map(|p| match p.ty {
-                Type::Int(r) => r,
-                Type::Bool => IntRange::new(0, 1),
-            })
-            .collect();
+        let ranges: Vec<IntRange> = crate::ast::input_domains(spec);
         let vals = bb.param_bits_interleaved(&ranges).map_err(|e| e.to_string())?;
         let mut named = Vec::new();
         for (p, v) in spec.params.iter().zip(vals) {
@@ -439,9 +656,15 @@ fn increment(ranges: &[IntRange], inputs: &mut [i64]) -> bool {
 // Exhaustive engine
 // ---------------------------------------------------------------------------
 
+/// The exhaustive engine: walk every input in the domain and *execute* the
+/// program (loops, branches and all) through the reference machine.
+///
+/// This is the definition of correctness by construction, and it is the
+/// cross-check for the symbolic Hoare proof of loops: one executes them, the
+/// other reasons about them.
 fn run_exhaustive(
     spec: &Spec,
-    body: &[Assign],
+    prog: &Program,
     budget: u128,
 ) -> Result<ExhaustiveReport, String> {
     let domain = spec.input_domain_size();
@@ -452,15 +675,9 @@ fn run_exhaustive(
         ));
     }
 
-    let ranges: Vec<IntRange> = spec
-        .params
-        .iter()
-        .map(|b| match b.ty {
-            Type::Int(r) => Ok(r),
-            Type::Bool => Err("bool params unsupported by exhaustive engine"),
-        })
-        .collect::<Result<Vec<_>, &str>>()
-        .map_err(|e| e.to_string())?;
+    // Flat scalar domains: an array parameter of N elements contributes N
+    // domains, so enumeration covers every array *content*.
+    let ranges: Vec<IntRange> = ast::input_domains(spec);
 
     let mut inputs: Vec<i64> = ranges.iter().map(|r| r.lo).collect();
     let mut checked: u128 = 0;
@@ -469,17 +686,12 @@ fn run_exhaustive(
     loop {
         if eval::precondition_holds(spec, &inputs) {
             checked += 1;
-            match eval::check_contract(spec, body, &inputs) {
+            match eval::check_contract_program(spec, prog, &inputs) {
                 Ok(false) => {} // satisfied
                 Ok(true) => {}  // out of domain (double-checked inside)
                 Err(v) => {
                     let cx = Counterexample {
-                        inputs: spec
-                            .params
-                            .iter()
-                            .zip(&inputs)
-                            .map(|(b, v)| (b.name.clone(), *v))
-                            .collect(),
+                        inputs: describe_inputs(spec, &inputs),
                         violation: v.to_string(),
                     };
                     return Ok(ExhaustiveReport {
@@ -525,14 +737,7 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
         let mut bb = BitBlaster::new(&mut bdd);
         let mut env = std::collections::HashMap::new();
         // Interleaved variable ordering — see bitblast::param_bits_interleaved.
-        let ranges: Vec<IntRange> = spec
-            .params
-            .iter()
-            .map(|p| match p.ty {
-                Type::Int(r) => r,
-                Type::Bool => IntRange::new(0, 1),
-            })
-            .collect();
+        let ranges: Vec<IntRange> = crate::ast::input_domains(spec);
         let vals = bb
             .param_bits_interleaved(&ranges)
             .map_err(|e: BlastError| e.to_string())?;
@@ -614,8 +819,231 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
 }
 
 // ---------------------------------------------------------------------------
-// Statistical engine
+// Obligation checking (the Hoare path)
 // ---------------------------------------------------------------------------
+
+/// Result of checking one universally quantified obligation.
+pub struct ValidityResult {
+    pub verdict: Verdict,
+    pub engines: Vec<EngineReport>,
+    pub counterexample: Option<Counterexample>,
+    pub notes: Vec<String>,
+}
+
+/// Check `assumptions ⇒ goal` for **every** value of `vars` in their declared
+/// domains. This is the shape every Hoare obligation has, and it is exactly
+/// what the existing engines already decide.
+pub fn check_validity(
+    vars: &[Binding],
+    assumptions: &[Expr],
+    goal: &Expr,
+    opts: &ProverOptions,
+) -> ValidityResult {
+    let mut engines = Vec::new();
+    let mut counterexample = None;
+    let mut notes = Vec::new();
+    let mut exhaustive_verdict: Option<Verdict> = None;
+    let mut bdd_verdict: Option<Verdict> = None;
+
+    // ---- exhaustive over the obligation's variable domains ---------------
+    // Only attempted when the state space is genuinely small: each state may
+    // evaluate quantifiers, so this engine is for obligations the symbolic
+    // engine cannot take (arrays), not the default. For loops the symbolic
+    // check is both faster and the one that actually reasons.
+    const OBLIGATION_STATE_BUDGET: u128 = 2_000_000;
+    let domains: Vec<IntRange> = vars
+        .iter()
+        .map(|b| b.ty.as_int_range().unwrap_or(IntRange::new(0, 1)))
+        .collect();
+    let space: u128 = domains.iter().map(|r| r.size()).product();
+    let bdd_will_try = opts.engine == "auto" || opts.engine == "bdd";
+    let exhaustive_worth_it = space <= OBLIGATION_STATE_BUDGET || !bdd_will_try;
+    if exhaustive_worth_it {
+        let synthetic = synthetic_spec(vars, assumptions, goal);
+        let mut cur: Vec<i64> = domains.iter().map(|r| r.lo).collect();
+        let mut checked: u128 = 0;
+        let mut found: Option<Counterexample> = None;
+        loop {
+            let env = eval::input_env(&synthetic, &cur);
+            if eval::precondition_holds(&synthetic, &cur) {
+                checked += 1;
+                let goal_holds = matches!(eval::eval(goal, &env), Ok(eval::Value::Bool(true)));
+                if !goal_holds {
+                    found = Some(Counterexample {
+                        inputs: vars
+                            .iter()
+                            .zip(&cur)
+                            .map(|(b, v)| (b.name.clone(), *v))
+                            .collect(),
+                        violation: format!("goal false: {}", goal),
+                    });
+                    break;
+                }
+            }
+            if !increment(&domains, &mut cur) {
+                break;
+            }
+        }
+        match found {
+            Some(cx) => {
+                exhaustive_verdict = Some(Verdict::Violated);
+                counterexample = Some(cx);
+            }
+            None => exhaustive_verdict = Some(Verdict::Proved),
+        }
+        engines.push(EngineReport {
+            engine: "exhaustive".into(),
+            verdict: exhaustive_verdict.clone().unwrap(),
+            checked,
+            nodes: None,
+            notes: vec![format!(
+                "enumerated all {} states of the obligation",
+                space
+            )],
+        });
+    } else {
+        // Deliberately not attempted: the symbolic engine is the right tool
+        // for a large obligation state space. Not a failure, so no engine
+        // entry — just a note for the report.
+        notes.push(format!(
+            "obligation state space is {} states; checked symbolically rather than by enumeration",
+            space
+        ));
+    }
+
+    // ---- BDD over the same obligation ------------------------------------
+    if opts.engine == "auto" || opts.engine == "bdd" {
+        match bdd_check_validity(vars, assumptions, goal, opts.bdd_budget) {
+            Ok((verdict, nodes, cx)) => {
+                bdd_verdict = Some(verdict.clone());
+                if counterexample.is_none() {
+                    counterexample = cx.clone();
+                }
+                engines.push(EngineReport {
+                    engine: "bdd-symbolic".into(),
+                    verdict,
+                    checked: 1,
+                    nodes: Some(nodes),
+                    notes: vec!["symbolic check of the obligation".into()],
+                });
+            }
+            Err(e) => {
+                engines.push(EngineReport {
+                    engine: "bdd-symbolic".into(),
+                    verdict: Verdict::GaveUp { reason: e.clone() },
+                    checked: 0,
+                    nodes: None,
+                    notes: vec![e],
+                });
+            }
+        }
+    }
+
+    // ---- cross-validate ---------------------------------------------------
+    let verdict = match (exhaustive_verdict, bdd_verdict) {
+        (Some(a), Some(b)) if a == b => a,
+        (Some(a), Some(b)) => {
+            notes.push(format!(
+                "ENGINES DISAGREE on obligation (exhaustive={:?}, bdd={:?}) — refusing to certify",
+                a, b
+            ));
+            Verdict::GaveUp {
+                reason: "internal: engines disagree on obligation".into(),
+            }
+        }
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => Verdict::GaveUp {
+            reason: "no engine could check the obligation".into(),
+        },
+    };
+
+    ValidityResult {
+        verdict,
+        engines,
+        counterexample,
+        notes,
+    }
+}
+
+/// A synthetic spec used to reuse the engines' domain machinery for an
+/// obligation: variables become parameters, assumptions become `requires`.
+fn synthetic_spec(vars: &[Binding], assumptions: &[Expr], goal: &Expr) -> Spec {
+    Spec {
+        name: "obligation".into(),
+        params: vars.to_vec(),
+        results: Vec::new(),
+        locals: Vec::new(),
+        requires: assumptions.to_vec(),
+        ensures: vec![goal.clone()],
+        examples: Vec::new(),
+        body: None,
+    }
+}
+
+fn bdd_check_validity(
+    vars: &[Binding],
+    assumptions: &[Expr],
+    goal: &Expr,
+    budget: usize,
+) -> Result<(Verdict, u128, Option<Counterexample>), String> {
+    // Every variable must be a plain integer domain for the bitblaster.
+    for v in vars {
+        match v.ty {
+            Type::Int(_) | Type::Decimal { .. } | Type::Bool => {}
+            Type::Array { .. } => {
+                return Err("obligation mentions array state (exhaustive engine only)".into())
+            }
+        }
+        // Arrays and quantifiers inside the predicates also decline.
+        for e in assumptions.iter().chain(std::iter::once(goal)) {
+            if bitblast::contains_division(e) {
+                return Err("obligation uses a fragment the bitblaster declines".into());
+            }
+        }
+    }
+
+    let synthetic = synthetic_spec(vars, assumptions, goal);
+    let mut bdd = Bdd::new(budget);
+    let (bad, vars_used, named) = {
+        let mut bb = BitBlaster::new(&mut bdd);
+        let mut env = std::collections::HashMap::new();
+        let ranges: Vec<IntRange> = vars
+            .iter()
+            .map(|b| b.ty.as_int_range().unwrap_or(IntRange::new(0, 1)))
+            .collect();
+        let vals = bb
+            .param_bits_interleaved(&ranges)
+            .map_err(|e: BlastError| e.to_string())?;
+        let mut named: Vec<(String, _IVal)> = Vec::new();
+        for (b, v) in vars.iter().zip(vals) {
+            env.insert(b.name.clone(), ival_clone(&v));
+            named.push((b.name.clone(), v));
+        }
+        let bad = bb
+            .bad_state_predicate(&synthetic, &env, &named, assumptions, std::slice::from_ref(goal))
+            .map_err(|e: BlastError| e.to_string())?;
+        (bad, bb.vars_used(), named)
+    };
+    let nodes = bdd.node_count() as u128;
+
+    if !bdd.sat(bad) {
+        let _ = vars_used;
+        return Ok((Verdict::Proved, nodes, None));
+    }
+
+    let assign = bdd_one_sat(&bdd, bad);
+    let decoded = decode_params(&synthetic, &named, &assign, &bdd);
+    Ok((
+        Verdict::Violated,
+        nodes,
+        Some(Counterexample {
+            inputs: decoded,
+            violation: format!("obligation fails: {}", goal),
+        }),
+    ))
+}
+
 
 fn run_statistical(
     spec: &Spec,
@@ -624,14 +1052,7 @@ fn run_statistical(
 ) -> (Verdict, Option<(f64, f64)>, Vec<String>) {
     let n = opts.samples;
     let mut rng = SplitMix64::new(0x1CE_BDD ^ (n as u64));
-    let ranges: Vec<IntRange> = spec
-        .params
-        .iter()
-        .map(|b| match b.ty {
-            Type::Int(r) => r,
-            Type::Bool => IntRange::new(0, 1),
-        })
-        .collect();
+    let ranges: Vec<IntRange> = crate::ast::input_domains(spec);
 
     let mut tested = 0u64;
     let mut guard = 0u64;

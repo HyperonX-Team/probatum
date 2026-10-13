@@ -191,7 +191,7 @@ pub fn synthesize(spec: &Spec, opts: &ProverOptions) -> Result<Synthesis, SynthE
         }
 
         // ---- the moment of truth: the prover ----------------------------
-        let proof = prove::prove(spec, &body, opts);
+        let proof = prove::prove(spec, &crate::ast::assigns_to_program(&body), opts);
         match proof.verdict {
             Verdict::Proved => {
                 return Ok(Synthesis { body, stats });
@@ -540,14 +540,7 @@ fn build_sample_inputs(spec: &Spec, examples: &[Example]) -> Vec<Vec<i64>> {
     let mut out: Vec<Vec<i64>> = examples.iter().map(|e| e.inputs.clone()).collect();
     // Deterministic extras spread through the domain (SplitMix64 walk).
     let mut rng = crate::prove::SplitMix64::new(0x5EED_C0DE);
-    let ranges: Vec<IntRange> = spec
-        .params
-        .iter()
-        .map(|b| match b.ty {
-            Type::Int(r) => r,
-            Type::Bool => IntRange::new(0, 1),
-        })
-        .collect();
+    let ranges: Vec<IntRange> = crate::ast::input_domains(spec);
     let mut guard = 0;
     while out.len() < examples.len() + SAMPLE_INPUTS && guard < SAMPLE_INPUTS * 20 {
         guard += 1;
@@ -581,7 +574,7 @@ fn enumerate_result(
 ) -> Result<Expr, SynthError> {
     let result = &spec.results[result_idx];
     let (expected, bool_result) = match &result.ty {
-        Type::Int(_) => (
+        Type::Int(_) | Type::Decimal { .. } => (
             examples
                 .iter()
                 .map(|e| e.outputs[result_idx])
@@ -595,6 +588,13 @@ fn enumerate_result(
             Vec::new(),
             true,
         ),
+        Type::Array { .. } => {
+            return Err(SynthError::Exhausted {
+                message: "array results are not synthesizable yet — write the body, \
+                          or narrow the result to a scalar"
+                    .into(),
+            })
+        }
     };
     let _ = bool_result;
 
@@ -909,7 +909,9 @@ fn solve_outputs(spec: &Spec, inputs: &[i64]) -> Result<Option<Vec<i64>>, SynthE
         .iter()
         .map(|r| match r.ty {
             Type::Int(range) => range.size() as i64,
+            Type::Decimal { stored, .. } => stored.size() as i64,
             Type::Bool => 2,
+            Type::Array { index, .. } => index.size() as i64,
         })
         .collect();
     let product: u128 = ranges.iter().map(|&r| r as u128).product();
@@ -931,7 +933,9 @@ fn solve_outputs(spec: &Spec, inputs: &[i64]) -> Result<Option<Vec<i64>>, SynthE
             .zip(&idx)
             .map(|(r, i)| match r.ty {
                 Type::Int(range) => range.lo + i,
+                Type::Decimal { stored, .. } => stored.lo + i,
                 Type::Bool => *i,
+                Type::Array { index, .. } => index.lo + i,
             })
             .collect();
 

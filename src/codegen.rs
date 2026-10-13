@@ -93,6 +93,35 @@ fn emit_expr_rust_like(e: &Expr) -> String {
             emit_expr_rust_like(a),
             emit_expr_rust_like(b)
         ),
+        // ---- arrays, quantifiers, folds -----------------------------------
+        // Emitted as inline blocks so the result is a plain expression, which
+        // keeps generated code readable and avoids inventing helper names.
+        Expr::ArrayRead(n, i) => format!("{}[({}) as usize]", n, emit_expr_rust_like(i)),
+        Expr::Len(n) => format!("({}.len() as i64)", n),
+        Expr::Forall { var, lo, hi, body } => format!(
+            "{{ let mut ok = true; let __lo = {lo}; let __hi = {hi}; \
+             for {v} in __lo..=__hi {{ if !({b}) {{ ok = false; break; }} }} ok }}",
+            lo = emit_expr_rust_like(lo),
+            hi = emit_expr_rust_like(hi),
+            v = var,
+            b = emit_expr_rust_like(body)
+        ),
+        Expr::Exists { var, lo, hi, body } => format!(
+            "{{ let mut found = false; let __lo = {lo}; let __hi = {hi}; \
+             for {v} in __lo..=__hi {{ if {b} {{ found = true; break; }} }} found }}",
+            lo = emit_expr_rust_like(lo),
+            hi = emit_expr_rust_like(hi),
+            v = var,
+            b = emit_expr_rust_like(body)
+        ),
+        Expr::Sum { var, lo, hi, body } => format!(
+            "{{ let mut acc: i64 = 0; let __lo = {lo}; let __hi = {hi}; \
+             for {v} in __lo..=__hi {{ acc += {b}; }} acc }}",
+            lo = emit_expr_rust_like(lo),
+            hi = emit_expr_rust_like(hi),
+            v = var,
+            b = emit_expr_rust_like(body)
+        ),
     }
 }
 
@@ -137,6 +166,30 @@ fn emit_expr_go(e: &Expr) -> String {
             let (x, y) = (emit_expr_go(a), emit_expr_go(b));
             format!("func() int64 {{ if {} > {} {{ return {} }}; return {} }}()", x, y, x, y)
         }
+        // ---- arrays, quantifiers, folds -----------------------------------
+        Expr::ArrayRead(n, i) => format!("{}[{}]", n, emit_expr_go(i)),
+        Expr::Len(n) => format!("int64(len({}))", n),
+        Expr::Forall { var, lo, hi, body } => format!(
+            "func() bool {{ for {v} := {lo}; {v} <= {hi}; {v}++ {{ if !({b}) {{ return false }} }}; return true }}()",
+            v = var,
+            lo = emit_expr_go(lo),
+            hi = emit_expr_go(hi),
+            b = emit_expr_go(body)
+        ),
+        Expr::Exists { var, lo, hi, body } => format!(
+            "func() bool {{ for {v} := {lo}; {v} <= {hi}; {v}++ {{ if {b} {{ return true }} }}; return false }}()",
+            v = var,
+            lo = emit_expr_go(lo),
+            hi = emit_expr_go(hi),
+            b = emit_expr_go(body)
+        ),
+        Expr::Sum { var, lo, hi, body } => format!(
+            "func() int64 {{ var acc int64 = 0; for {v} := {lo}; {v} <= {hi}; {v}++ {{ acc += {b} }}; return acc }}()",
+            v = var,
+            lo = emit_expr_go(lo),
+            hi = emit_expr_go(hi),
+            b = emit_expr_go(body)
+        ),
     }
 }
 
@@ -144,6 +197,8 @@ fn rust_ty(t: &Type) -> String {
     match t {
         Type::Int(_) => "i64".into(),
         Type::Bool => "bool".into(),
+        Type::Decimal { .. } => "i64".into(), // scaled integer — exact
+        Type::Array { .. } => "Vec<i64>".into(),
     }
 }
 
@@ -151,24 +206,92 @@ fn go_ty(t: &Type) -> String {
     match t {
         Type::Int(_) => "int64".into(),
         Type::Bool => "bool".into(),
+        Type::Decimal { .. } => "int64".into(),
+        Type::Array { .. } => "[]int64".into(),
     }
 }
 
-/// Generate a full compilation unit for `spec` + verified `body`.
+/// Generate a full compilation unit for `spec` + verified program.
 pub fn emit(
     spec: &Spec,
-    body: &[Assign],
+    prog: &Program,
     lang: TargetLang,
     cert_digest: &str,
 ) -> Result<String, String> {
     match lang {
-        TargetLang::Dsl => Ok(emit_dsl(spec, body, cert_digest)),
-        TargetLang::Rust => Ok(emit_rust(spec, body, cert_digest)),
-        TargetLang::Go => Ok(emit_go(spec, body, cert_digest)),
+        TargetLang::Dsl => Ok(emit_dsl(spec, prog, cert_digest)),
+        TargetLang::Rust => Ok(emit_rust(spec, prog, cert_digest)),
+        TargetLang::Go => Ok(emit_go(spec, prog, cert_digest)),
     }
 }
 
-fn emit_dsl(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
+/// Emit a statement block in the target language.
+///
+/// Every variable is declared up front (see the emitters), so statements are
+/// plain assignments in both languages — which is also what makes
+/// reassignment inside a loop correct in Go, where `:=` would shadow.
+fn emit_stmts(stmts: &[Stmt], lang: TargetLang, indent: usize) -> String {
+    let pad = "    ".repeat(indent);
+    let mut s = String::new();
+    for st in stmts {
+        match st {
+            Stmt::Assign { name, value } => {
+                s.push_str(&format!("{}{} = {};\n", pad, name, emit_expr(value, lang)));
+            }
+            Stmt::ArrayAssign {
+                array,
+                index,
+                value,
+            } => {
+                s.push_str(&format!(
+                    "{}{}[{}] = {};\n",
+                    pad,
+                    array,
+                    emit_expr(index, lang),
+                    emit_expr(value, lang)
+                ));
+            }
+            Stmt::Assert(e) => {
+                // The runtime backstop for an inline proof obligation.
+                let cond = emit_expr(e, lang);
+                match lang {
+                    TargetLang::Go => {
+                        s.push_str(&format!(
+                            "{}if !({}) {{ panic(\"assertion failed\") }}\n",
+                            pad, cond
+                        ));
+                    }
+                    _ => {
+                        s.push_str(&format!("{}debug_assert!({});\n", pad, cond));
+                    }
+                }
+            }
+            Stmt::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                s.push_str(&format!("{}if {} {{\n", pad, emit_expr(cond, lang)));
+                s.push_str(&emit_stmts(then_body, lang, indent + 1));
+                if else_body.is_empty() {
+                    s.push_str(&format!("{}}}\n", pad));
+                } else {
+                    s.push_str(&format!("{}}} else {{\n", pad));
+                    s.push_str(&emit_stmts(else_body, lang, indent + 1));
+                    s.push_str(&format!("{}}}\n", pad));
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                s.push_str(&format!("{}while {} {{\n", pad, emit_expr(cond, lang)));
+                s.push_str(&emit_stmts(body, lang, indent + 1));
+                s.push_str(&format!("{}}}\n", pad));
+            }
+        }
+    }
+    s
+}
+
+fn emit_dsl(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
     let mut s = String::new();
     s.push_str(&format!(
         "// Generated by ic (the intent compiler)\n// verified-by-cert-sha256: {}\n",
@@ -209,14 +332,14 @@ fn emit_dsl(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
         ));
     }
     s.push_str("{\n");
-    for a in body {
-        s.push_str(&format!("  {} := {};\n", a.name, a.value));
-    }
+    // Canonical statement rendering — the same text the certificate digests,
+    // so the artifact and the proof always describe the same program.
+    s.push_str(&crate::ast::render_program_stmts(prog, 1));
     s.push_str("}\n");
     s
 }
 
-fn emit_rust(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
+fn emit_rust(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
     let mut s = String::new();
     s.push_str(&format!(
         "//! `{}` — generated by ic (the intent compiler).\n//!\n\
@@ -229,7 +352,7 @@ fn emit_rust(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
         spec.name, cert_digest
     ));
     // Embed the spec as a doc comment for traceability.
-    for line in emit_dsl(spec, body, cert_digest).lines() {
+    for line in emit_dsl(spec, prog, cert_digest).lines() {
         s.push_str(&format!("//! {}\n", line));
     }
     s.push_str("//! ```\n\n");
@@ -272,14 +395,44 @@ fn emit_rust(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
         ));
     }
 
-    // Body.
-    for a in body {
-        s.push_str(&format!(
-            "    let {} = {};\n",
-            a.name,
-            emit_expr(&a.value, TargetLang::Rust)
-        ));
+    // Body: locals first (so the verifier's layout matches the emitted code),
+    // then the verified program.
+    for l in &spec.locals {
+        match l.ty {
+            Type::Array { index, elem } => s.push_str(&format!(
+                "    let mut {}: Vec<i64> = vec![{}i64; {}];\n",
+                l.name,
+                elem.lo,
+                index.size()
+            )),
+            Type::Int(r) => s.push_str(&format!("    let mut {}: i64 = {};\n", l.name, r.lo)),
+            Type::Decimal { stored, .. } => {
+                s.push_str(&format!("    let mut {}: i64 = {};\n", l.name, stored.lo))
+            }
+            Type::Bool => s.push_str(&format!("    let mut {}: bool = false;\n", l.name)),
+        }
     }
+    // Results are declared up front too: a result assigned only inside a
+    // branch must still be definitely assigned on every path for the emitted
+    // code to compile — and the verifier's job is to ensure it always is.
+    for r in &spec.results {
+        match r.ty {
+            Type::Array { index, elem } => s.push_str(&format!(
+                "    let mut {}: Vec<i64> = vec![{}i64; {}];\n",
+                r.name,
+                elem.lo,
+                index.size()
+            )),
+            Type::Int(range) => {
+                s.push_str(&format!("    let mut {}: i64 = {};\n", r.name, range.lo))
+            }
+            Type::Decimal { stored, .. } => {
+                s.push_str(&format!("    let mut {}: i64 = {};\n", r.name, stored.lo))
+            }
+            Type::Bool => s.push_str(&format!("    let mut {}: bool = false;\n", r.name)),
+        }
+    }
+    s.push_str(&emit_stmts(prog, TargetLang::Rust, 1));
 
     // Postcondition backstops.
     for (i, c) in spec.ensures.iter().enumerate() {
@@ -302,7 +455,7 @@ fn emit_rust(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
     s
 }
 
-fn emit_go(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
+fn emit_go(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
     let mut s = String::new();
     s.push_str(&format!(
         "// {} — generated by ic (the intent compiler).\n//\n\
@@ -360,13 +513,41 @@ fn emit_go(spec: &Spec, body: &[Assign], cert_digest: &str) -> String {
             i + 1
         ));
     }
-    for a in body {
-        s.push_str(&format!(
-            "\t{} := {}\n",
-            a.name,
-            emit_expr(&a.value, TargetLang::Go)
-        ));
+    for l in &spec.locals {
+        match l.ty {
+            Type::Array { index, elem } => s.push_str(&format!(
+                "\t{} := make([]int64, {}); for i := range {} {{ {}[i] = {} }}\n",
+                l.name,
+                index.size(),
+                l.name,
+                l.name,
+                elem.lo
+            )),
+            Type::Int(r) => s.push_str(&format!("\tvar {} int64 = {}\n", l.name, r.lo)),
+            Type::Decimal { stored, .. } => {
+                s.push_str(&format!("\tvar {} int64 = {}\n", l.name, stored.lo))
+            }
+            Type::Bool => s.push_str(&format!("\tvar {} bool = false\n", l.name)),
+        }
     }
+    for r in &spec.results {
+        match r.ty {
+            Type::Array { index, elem } => s.push_str(&format!(
+                "\t{} := make([]int64, {}); for i := range {} {{ {}[i] = {} }}\n",
+                r.name,
+                index.size(),
+                r.name,
+                r.name,
+                elem.lo
+            )),
+            Type::Int(range) => s.push_str(&format!("\tvar {} int64 = {}\n", r.name, range.lo)),
+            Type::Decimal { stored, .. } => {
+                s.push_str(&format!("\tvar {} int64 = {}\n", r.name, stored.lo))
+            }
+            Type::Bool => s.push_str(&format!("\tvar {} bool = false\n", r.name)),
+        }
+    }
+    s.push_str(&emit_stmts(prog, TargetLang::Go, 0));
     for (i, c) in spec.ensures.iter().enumerate() {
         s.push_str(&format!(
             "\tif !({}) {{ panic(\"ensures #{} violated\") }}\n",
@@ -397,7 +578,7 @@ mod tests {
     use super::*;
     use crate::parser::parse;
 
-    fn transfer() -> (Spec, Vec<Assign>) {
+    fn transfer() -> (Spec, Program) {
         let s = parse(
             r#"
             spec transfer(a: int[0..255], b: int[0..255], amount: int[0..255])

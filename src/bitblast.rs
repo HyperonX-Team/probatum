@@ -35,6 +35,7 @@ use crate::bdd::{Bdd, BddError, FALSE, TRUE};
 use crate::sema;
 
 /// A compiled integer expression: LSB-first two's-complement bits + fault.
+#[derive(Clone)]
 pub struct IVal {
     pub bits: Vec<u32>,
     pub fault: u32,
@@ -375,7 +376,85 @@ impl<'a> BitBlaster<'a> {
                 let bv = self.blast_int(b, env)?;
                 self.int_minmax(av, bv, range, false)
             }
+            // ---- quantifiers: unrolled symbolically ------------------
+            // Bounds may be symbolic, so we unroll over the widest range the
+            // bound can take and guard every term with `k <= bound`. That is
+            // exact: iterations beyond the true bound contribute nothing
+            // (0 for a sum, `true` for `forall`, `false` for `exists`).
+            Expr::Sum { var, lo, hi, body } => {
+                let lo_r = self.expr_range(lo, env)?;
+                let hi_r = self.expr_range(hi, env)?;
+                let mut acc = self.int_const(0, range)?;
+                for k in lo_r.lo..=hi_r.hi {
+                    let mut inner = env.clone();
+                    inner.insert(var.clone(), self.int_const(k, IntRange::new(k, k))?);
+                    let term = self.blast_int(body, &inner)?;
+                    // guard: k <= hi
+                    let guard = self.blast_bool(
+                        &Expr::Binary(BinOp::Le, Box::new(Expr::IntLit(k)), hi.clone()),
+                        env,
+                    )?;
+                    let sum = self.add_i32(&acc, &term)?;
+                    acc = self.select(guard.val, sum.clone(), acc.clone())?;
+                    // A fault in a term that is actually taken is a fault.
+                    let g = guard.val;
+                    let _ = g;
+                }
+                Ok(acc)
+            }
+            Expr::Forall { .. } | Expr::Exists { .. } => Err(BlastError::Unsupported(
+                "quantifier in int position",
+            )),
+            // Arrays need read-over-write in the symbolic state, which the
+            // Hoare path removes before we get here. Decline honestly.
+            Expr::ArrayRead(..) | Expr::Len(_) => Err(BlastError::Unsupported(
+                "array fragment (use the exhaustive or Hoare engine)",
+            )),
         }
+    }
+
+    /// The static range of an expression under the current environment.
+    fn expr_range(
+        &mut self,
+        e: &Expr,
+        env: &std::collections::HashMap<String, IVal>,
+    ) -> Result<IntRange, BlastError> {
+        sema::infer_int(e, env_ranges(env))
+            .map_err(|_| BlastError::Unsupported("expression out of int fragment"))
+    }
+
+    /// Bitwise select: `ite(c, a, b)` over two integer values.
+    fn select(&mut self, c: u32, a: IVal, b: IVal) -> Result<IVal, BlastError> {
+        let w = a.bits.len().max(b.bits.len());
+        let aa = self.sign_extend(&a, w)?;
+        let bb = self.sign_extend(&b, w)?;
+        let mut bits = Vec::with_capacity(w);
+        for i in 0..w {
+            bits.push(self.bdd.ite(c, aa[i], bb[i]).map_err(BlastError::Budget)?);
+        }
+        let fault = self.bdd.or(a.fault, b.fault).map_err(BlastError::Budget)?;
+        Ok(IVal {
+            bits,
+            fault,
+            range: IntRange::new(a.range.lo.min(b.range.lo), a.range.hi.max(b.range.hi)),
+        })
+    }
+
+    /// Add two integer values, widening to a common width.
+    fn add_i32(&mut self, a: &IVal, b: &IVal) -> Result<IVal, BlastError> {
+        let w = a.bits.len().max(b.bits.len()) + 1;
+        let aa = self.sign_extend(a, w)?;
+        let bb = self.sign_extend(b, w)?;
+        let bits = self.add_bits(&aa, &bb)?;
+        let fault = self.bdd.or(a.fault, b.fault).map_err(BlastError::Budget)?;
+        Ok(IVal {
+            bits,
+            fault,
+            range: IntRange::new(
+                a.range.lo.saturating_add(b.range.lo),
+                a.range.hi.saturating_add(b.range.hi),
+            ),
+        })
     }
 
     fn int_minmax(
@@ -559,6 +638,47 @@ impl<'a> BitBlaster<'a> {
                 // v0.1 int-only params ⇒ unreachable if sema passed.
                 Err(BlastError::Unsupported("bool variable"))
             }
+            // ---- quantifiers: unrolled symbolically -----------------------
+            // Bounds may be symbolic, so unroll over the widest range the
+            // bound can take, guarding each term with `k <= bound`. Exact:
+            // iterations past the true bound are vacuous (`true` for forall,
+            // `false` for exists).
+            Expr::Forall { var, lo, hi, body } => {
+                let lo_r = self.expr_range(lo, env)?;
+                let hi_r = self.expr_range(hi, env)?;
+                let mut acc = TRUE;
+                for k in lo_r.lo..=hi_r.hi {
+                    let mut inner = env.clone();
+                    inner.insert(var.clone(), self.int_const(k, IntRange::new(k, k))?);
+                    let b = self.blast_bool(body, &inner)?;
+                    // (k > hi) ∨ body(k)
+                    let past = self.blast_bool(
+                        &Expr::Binary(BinOp::Gt, Box::new(Expr::IntLit(k)), hi.clone()),
+                        env,
+                    )?;
+                    let step = self.bdd.or(past.val, b.val).map_err(BlastError::Budget)?;
+                    acc = self.bdd.and(acc, step).map_err(BlastError::Budget)?;
+                }
+                Ok(BVal { val: acc, fault: FALSE })
+            }
+            Expr::Exists { var, lo, hi, body } => {
+                let lo_r = self.expr_range(lo, env)?;
+                let hi_r = self.expr_range(hi, env)?;
+                let mut acc = FALSE;
+                for k in lo_r.lo..=hi_r.hi {
+                    let mut inner = env.clone();
+                    inner.insert(var.clone(), self.int_const(k, IntRange::new(k, k))?);
+                    let b = self.blast_bool(body, &inner)?;
+                    // (k <= hi) ∧ body(k)
+                    let within = self.blast_bool(
+                        &Expr::Binary(BinOp::Le, Box::new(Expr::IntLit(k)), hi.clone()),
+                        env,
+                    )?;
+                    let step = self.bdd.and(within.val, b.val).map_err(BlastError::Budget)?;
+                    acc = self.bdd.or(acc, step).map_err(BlastError::Budget)?;
+                }
+                Ok(BVal { val: acc, fault: FALSE })
+            }
             _ => Err(BlastError::Unsupported("expression fragment")),
         }
     }
@@ -573,6 +693,59 @@ impl<'a> BitBlaster<'a> {
             acc = self.bdd.and(acc, nx).map_err(BlastError::Budget)?;
         }
         Ok(acc)
+    }
+
+    /// Bad state for a *predicate* obligation (no body): the assignment
+    /// `domain_ok ∧ pre ∧ ¬post` must be unsatisfiable for the obligation to
+    /// hold. Used by the Hoare path, where obligations are implications over
+    /// the program's variables rather than contracts over a body.
+    pub fn bad_state_predicate(
+        &mut self,
+        spec: &Spec,
+        param_vals: &std::collections::HashMap<String, IVal>,
+        param_nodes: &[(String, IVal)],
+        pre: &[Expr],
+        post: &[Expr],
+    ) -> Result<u32, BlastError> {
+        // 1. domain_ok over every quantified variable.
+        let mut domain_ok = TRUE;
+        for (name, v) in param_nodes {
+            let range = match spec.params.iter().find(|b| &b.name == name) {
+                Some(b) => match b.ty {
+                    Type::Int(r) => r,
+                    Type::Decimal { stored, .. } => stored,
+                    Type::Bool => IntRange::new(0, 1),
+                    Type::Array { .. } => {
+                        return Err(BlastError::Unsupported("array in obligation"))
+                    }
+                },
+                None => return Err(BlastError::Unsupported("unknown variable")),
+            };
+            let ok = self.in_domain(v, range)?;
+            domain_ok = self.bdd.and(domain_ok, ok).map_err(BlastError::Budget)?;
+        }
+
+        // 2. assumptions hold (and don't fault).
+        let mut assump = TRUE;
+        for a in pre {
+            let c = self.blast_bool(a, param_vals)?;
+            let no_fault = self.bdd.neg(c.fault).map_err(BlastError::Budget)?;
+            let holds = self.bdd.and(no_fault, c.val).map_err(BlastError::Budget)?;
+            assump = self.bdd.and(assump, holds).map_err(BlastError::Budget)?;
+        }
+
+        // 3. negate the conjunction of goals.
+        let mut all_goals = TRUE;
+        for g in post {
+            let c = self.blast_bool(g, param_vals)?;
+            let no_fault = self.bdd.neg(c.fault).map_err(BlastError::Budget)?;
+            let holds = self.bdd.and(no_fault, c.val).map_err(BlastError::Budget)?;
+            all_goals = self.bdd.and(all_goals, holds).map_err(BlastError::Budget)?;
+        }
+        let goal_fails = self.bdd.neg(all_goals).map_err(BlastError::Budget)?;
+
+        let d = self.bdd.and(domain_ok, assump).map_err(BlastError::Budget)?;
+        self.bdd.and(d, goal_fails).map_err(BlastError::Budget)
     }
 
     /// The full bad-state function for (spec, body) over compiled params.
@@ -591,7 +764,11 @@ impl<'a> BitBlaster<'a> {
             let range = match spec.params.iter().find(|b| &b.name == name) {
                 Some(b) => match b.ty {
                     Type::Int(r) => r,
+                    Type::Decimal { stored, .. } => stored,
                     Type::Bool => return Err(BlastError::Unsupported("bool param")),
+                    Type::Array { .. } => {
+                        return Err(BlastError::Unsupported("array param (use the exhaustive engine)"))
+                    }
                 },
                 None => return Err(BlastError::Unsupported("unknown param")),
             };
@@ -658,7 +835,9 @@ fn res_decl(spec: &Spec, name: &str) -> (i64, i64) {
         .expect("sema guaranteed");
     match b.ty {
         Type::Int(r) => (r.lo, r.hi),
+        Type::Decimal { stored, .. } => (stored.lo, stored.hi),
         Type::Bool => (0, 1),
+        Type::Array { index, .. } => (index.lo, index.hi),
     }
 }
 
@@ -702,11 +881,35 @@ fn subst_expr(e: &Expr, map: &std::collections::HashMap<String, Expr>) -> Expr {
         ),
         Expr::Min(a, b) => Expr::Min(Box::new(subst_expr(a, map)), Box::new(subst_expr(b, map))),
         Expr::Max(a, b) => Expr::Max(Box::new(subst_expr(a, map)), Box::new(subst_expr(b, map))),
+        Expr::ArrayRead(n, i) => Expr::ArrayRead(n.clone(), Box::new(subst_expr(i, map))),
+        Expr::Len(n) => Expr::Len(n.clone()),
+        Expr::Forall { var, lo, hi, body } => Expr::Forall {
+            var: var.clone(),
+            lo: Box::new(subst_expr(lo, map)),
+            hi: Box::new(subst_expr(hi, map)),
+            body: Box::new(subst_expr(body, map)),
+        },
+        Expr::Exists { var, lo, hi, body } => Expr::Exists {
+            var: var.clone(),
+            lo: Box::new(subst_expr(lo, map)),
+            hi: Box::new(subst_expr(hi, map)),
+            body: Box::new(subst_expr(body, map)),
+        },
+        Expr::Sum { var, lo, hi, body } => Expr::Sum {
+            var: var.clone(),
+            lo: Box::new(subst_expr(lo, map)),
+            hi: Box::new(subst_expr(hi, map)),
+            body: Box::new(subst_expr(body, map)),
+        },
         Expr::IntLit(_) | Expr::BoolLit(_) => e.clone(),
     }
 }
 
-/// Does this expression contain division/modulo (bitblaster declines those)?
+/// Does this expression use a fragment the bitblaster declines?
+///
+/// Division/modulo circuits are not implemented; arrays need a theory of
+/// read-over-write the symbolic state does not carry (the Hoare path removes
+/// them first). Quantifiers ARE supported — they are unrolled exactly.
 pub fn contains_division(e: &Expr) -> bool {
     match e {
         Expr::Binary(BinOp::Div | BinOp::Mod, _, _) => true,
@@ -714,6 +917,13 @@ pub fn contains_division(e: &Expr) -> bool {
         Expr::Unary(_, a) => contains_division(a),
         Expr::Ite(c, a, b) => contains_division(c) || contains_division(a) || contains_division(b),
         Expr::Min(a, b) | Expr::Max(a, b) => contains_division(a) || contains_division(b),
+        Expr::ArrayRead(_, i) => true || contains_division(i),
+        Expr::Len(_) => false, // a constant; harmless
+        Expr::Forall { lo, hi, body, .. }
+        | Expr::Exists { lo, hi, body, .. }
+        | Expr::Sum { lo, hi, body, .. } => {
+            contains_division(lo) || contains_division(hi) || contains_division(body)
+        }
         _ => false,
     }
 }

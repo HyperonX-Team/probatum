@@ -30,6 +30,7 @@ mod bdd;
 mod bitblast;
 mod codegen;
 mod eval;
+mod hoare;
 mod lexer;
 mod parser;
 mod prove;
@@ -37,7 +38,7 @@ mod sema;
 mod sha256;
 mod synth;
 
-use ast::Spec;
+use ast::{Program, Spec};
 use prove::{Certificate, ProverOptions, Verdict};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -252,7 +253,9 @@ fn cmd_compile(args: &[String]) -> ExitCode {
     let popts = to_prover_opts(&o);
 
     // Obtain a body: from the spec, or by synthesis.
-    let (body, synth_stats) = match spec.body.clone() {
+    // A synthesized body is straight-line scalar code, so it is wrapped into
+    // the statement form; a hand-written body may use loops and arrays.
+    let (body, synth_stats): (Program, Option<synth::SynthStats>) = match spec.body.clone() {
         Some(b) => (b, None),
         None => {
             eprintln!(
@@ -267,7 +270,7 @@ fn cmd_compile(args: &[String]) -> ExitCode {
                         s.stats.candidates_generated,
                         s.stats.candidates_pruned
                     );
-                    (s.body, Some(s.stats))
+                    (ast::assigns_to_program(&s.body), Some(s.stats))
                 }
                 Err(e) => {
                     eprintln!("synthesis failed: {}", e);
@@ -765,7 +768,11 @@ fn report_verdict(spec: &Spec, proof: &prove::ProofResult) -> ExitCode {
     }
 }
 
-fn render_program(spec: &Spec, body: &[ast::Assign]) -> String {
+/// Canonical program text — what `program-sha256` binds.
+///
+/// Uses the same statement renderer as the certificate and the generated
+/// artifacts, so the digest describes the exact program being proved.
+fn render_program(spec: &Spec, body: &Program) -> String {
     let mut s = format!("program {}(", spec.name);
     s.push_str(
         &spec
@@ -775,6 +782,17 @@ fn render_program(spec: &Spec, body: &[ast::Assign]) -> String {
             .collect::<Vec<_>>()
             .join(", "),
     );
+    if !spec.locals.is_empty() {
+        s.push_str(") locals (");
+        s.push_str(
+            &spec
+                .locals
+                .iter()
+                .map(|b| format!("{}: {}", b.name, b.ty))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
     s.push_str(") -> (");
     s.push_str(
         &spec
@@ -785,9 +803,7 @@ fn render_program(spec: &Spec, body: &[ast::Assign]) -> String {
             .join(", "),
     );
     s.push_str(")\n");
-    for a in body {
-        s.push_str(&format!("  {} := {};\n", a.name, a.value));
-    }
+    s.push_str(&ast::render_program_stmts(body, 1));
     s
 }
 

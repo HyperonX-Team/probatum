@@ -135,6 +135,22 @@ impl Parser {
         }
         self.expect(&Tok::RParen, "`)`")?;
 
+        // optional `locals ( i: int[0..100], acc: int[0..999] )`
+        let mut locals = Vec::new();
+        if self.at(&Tok::Locals) {
+            self.advance();
+            self.expect(&Tok::LParen, "`(`")?;
+            if !self.at(&Tok::RParen) {
+                loop {
+                    locals.push(self.parse_binding()?);
+                    if !self.eat(&Tok::Comma)? {
+                        break;
+                    }
+                }
+            }
+            self.expect(&Tok::RParen, "`)`")?;
+        }
+
         // clauses
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
@@ -168,7 +184,9 @@ impl Parser {
 
         // optional body
         let body = if self.at(&Tok::LBrace) {
-            Some(self.parse_body(&results)?)
+            self.expect(&Tok::LBrace, "`{`")?;
+            let prog = self.parse_stmts()?;
+            Some(prog)
         } else {
             None
         };
@@ -179,6 +197,7 @@ impl Parser {
             name,
             params,
             results,
+            locals,
             requires,
             ensures,
             examples,
@@ -313,49 +332,151 @@ impl Parser {
         Ok(Example { inputs, outputs })
     }
 
-    fn parse_body(&mut self, results: &[Binding]) -> PResult<Vec<Assign>> {
+    /// Parse a block body: a sequence of statements up to the closing `}`.
+    fn parse_block(&mut self) -> PResult<Vec<Stmt>> {
         self.expect(&Tok::LBrace, "`{`")?;
-        let mut assigns = Vec::new();
-        while !self.at(&Tok::RBrace) {
+        self.parse_stmts()
+    }
+
+    /// Parse statements until `}` (consuming it).
+    fn parse_stmts(&mut self) -> PResult<Vec<Stmt>> {
+        let mut stmts = Vec::new();
+        loop {
+            if self.at(&Tok::RBrace) {
+                self.advance();
+                break;
+            }
             if self.at(&Tok::Eof) {
                 return Err(ParseError {
                     message: "unterminated body: missing `}`".into(),
                     span: self.span(),
                 });
             }
-            let name = self.expect_ident("assignment target")?;
-            if !results.iter().any(|b| b.name == name) {
-                return Err(ParseError {
-                    message: format!(
-                        "`{}` is not a declared result variable (assignments target results)",
-                        name
-                    ),
-                    span: self.span(),
-                });
-            }
-            if assigns.iter().any(|a: &Assign| a.name == name) {
-                return Err(ParseError {
-                    message: format!("duplicate assignment to result `{}`", name),
-                    span: self.span(),
-                });
-            }
-            self.expect(&Tok::ColonEq, "`:=`")?;
-            let value = self.parse_expr()?;
-            self.expect(&Tok::Semi, "`;`")?;
-            assigns.push(Assign { name, value });
+            stmts.push(self.parse_stmt()?);
         }
-        self.expect(&Tok::RBrace, "`}`")?;
+        Ok(stmts)
+    }
 
-        // Every result must be assigned exactly once.
-        for b in results {
-            if !assigns.iter().any(|a| a.name == b.name) {
-                return Err(ParseError {
-                    message: format!("result `{}` is never assigned in the body", b.name),
-                    span: self.span(),
-                });
+    fn parse_stmt(&mut self) -> PResult<Stmt> {
+        match self.peek().clone() {
+            // ---- if / else -------------------------------------------------
+            Tok::If => {
+                self.advance();
+                let cond = self.parse_expr()?;
+                let then_body = self.parse_block()?;
+                let mut else_body = Vec::new();
+                if self.at(&Tok::Else) {
+                    self.advance();
+                    if self.at(&Tok::If) {
+                        // `else if` — desugar one level into a nested if.
+                        else_body.push(self.parse_stmt()?);
+                    } else {
+                        else_body = self.parse_block()?;
+                    }
+                }
+                Ok(Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                })
+            }
+
+            // ---- while with invariants -------------------------------------
+            Tok::While => {
+                self.advance();
+                let cond = self.parse_expr()?;
+                let mut invariants = Vec::new();
+                let mut decreases = None;
+                // `invariant E` / `decreases E` may repeat, in any order,
+                // before the body block. At least one invariant is required —
+                // an invariant-free loop cannot be verified, only run.
+                loop {
+                    if self.at(&Tok::Invariant) {
+                        self.advance();
+                        invariants.push(self.parse_expr()?);
+                    } else if self.at(&Tok::Decreases) {
+                        self.advance();
+                        decreases = Some(self.parse_expr()?);
+                    } else {
+                        break;
+                    }
+                }
+                if invariants.is_empty() {
+                    return Err(ParseError {
+                        message: "a `while` loop needs at least one `invariant` — \
+                                  without one the loop cannot be verified, only run"
+                            .into(),
+                        span: self.span(),
+                    });
+                }
+                let body = self.parse_block()?;
+                Ok(Stmt::While {
+                    cond,
+                    invariants,
+                    decreases,
+                    body,
+                })
+            }
+
+            // ---- assert ----------------------------------------------------
+            Tok::Assert => {
+                self.advance();
+                let e = self.parse_expr()?;
+                self.expect(&Tok::Semi, "`;`")?;
+                Ok(Stmt::Assert(e))
+            }
+
+            // ---- assignment (scalar or indexed) ----------------------------
+            Tok::Ident(name) => {
+                self.advance();
+                if self.at(&Tok::LBracket) {
+                    // a[i] := e;
+                    self.advance();
+                    let index = self.parse_expr()?;
+                    self.expect(&Tok::RBracket, "`]`")?;
+                    self.expect(&Tok::ColonEq, "`:=`")?;
+                    let value = self.parse_expr()?;
+                    self.expect(&Tok::Semi, "`;`")?;
+                    Ok(Stmt::ArrayAssign {
+                        array: name,
+                        index,
+                        value,
+                    })
+                } else {
+                    self.expect(&Tok::ColonEq, "`:=`")?;
+                    let value = self.parse_expr()?;
+                    self.expect(&Tok::Semi, "`;`")?;
+                    Ok(Stmt::Assign { name, value })
+                }
+            }
+
+            other => Err(ParseError {
+                message: format!(
+                    "expected a statement (assignment, `if`, `while`, `assert`) but found `{}`",
+                    other
+                ),
+                span: self.span(),
+            }),
+        }
+    }
+
+    /// Every name assigned anywhere in the program (recursively).
+    fn collect_assigned(prog: &[Stmt], out: &mut Vec<String>) {
+        for s in prog {
+            match s {
+                Stmt::Assign { name, .. } => out.push(name.clone()),
+                Stmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    Self::collect_assigned(then_body, out);
+                    Self::collect_assigned(else_body, out);
+                }
+                Stmt::While { body, .. } => Self::collect_assigned(body, out),
+                _ => {}
             }
         }
-        Ok(assigns)
     }
 
     // Expression precedence: || < && < comparison < additive < multiplicative < unary < primary
@@ -494,7 +615,59 @@ impl Parser {
             }
             Tok::Ident(name) => {
                 self.advance();
-                Ok(Expr::Param(name))
+                // `a[i]` — indexed read.
+                if self.at(&Tok::LBracket) {
+                    self.advance();
+                    let index = self.parse_expr()?;
+                    self.expect(&Tok::RBracket, "`]`")?;
+                    Ok(Expr::ArrayRead(name, Box::new(index)))
+                } else {
+                    Ok(Expr::Param(name))
+                }
+            }
+            Tok::Len => {
+                self.advance();
+                self.expect(&Tok::LParen, "`(`")?;
+                let name = self.expect_ident("array name")?;
+                self.expect(&Tok::RParen, "`)`")?;
+                Ok(Expr::Len(name))
+            }
+            Tok::Forall | Tok::Exists | Tok::Sum => {
+                let kind = self.advance();
+                // Two spellings:
+                //   forall i in 0..n: BODY      (quantifier form)
+                //   sum(i in 0..n: BODY)        (fold form, parenthesized)
+                let parenthesized = self.eat(&Tok::LParen)?;
+                let var = self.expect_ident("bound variable")?;
+                self.expect(&Tok::In, "`in`")?;
+                let lo = self.parse_additive()?;
+                self.expect(&Tok::DotDot, "`..`")?;
+                let hi = self.parse_additive()?;
+                self.expect(&Tok::Colon, "`:`")?;
+                let body = self.parse_expr()?;
+                if parenthesized {
+                    self.expect(&Tok::RParen, "`)`")?;
+                }
+                match kind {
+                    Tok::Forall => Ok(Expr::Forall {
+                        var,
+                        lo: Box::new(lo),
+                        hi: Box::new(hi),
+                        body: Box::new(body),
+                    }),
+                    Tok::Exists => Ok(Expr::Exists {
+                        var,
+                        lo: Box::new(lo),
+                        hi: Box::new(hi),
+                        body: Box::new(body),
+                    }),
+                    _ => Ok(Expr::Sum {
+                        var,
+                        lo: Box::new(lo),
+                        hi: Box::new(hi),
+                        body: Box::new(body),
+                    }),
+                }
             }
             Tok::LParen => {
                 self.advance();
@@ -550,7 +723,10 @@ mod tests {
         assert_eq!(s.examples.len(), 1);
         let body = s.body.expect("body present");
         assert_eq!(body.len(), 2);
-        assert_eq!(body[0].name, "x");
+        match &body[0] {
+            Stmt::Assign { name, .. } => assert_eq!(name, "x"),
+            other => panic!("expected an assignment, got {:?}", other),
+        }
     }
 
     #[test]
@@ -566,13 +742,20 @@ mod tests {
 
     #[test]
     fn rejects_undeclared_assignment() {
+        // Shape is now checked by semantic analysis (the parser just builds
+        // the AST), so the diagnostic comes from `analyze`.
         let src = r#"
         spec s(a: int[0..9]) returns (r: int[0..9])
           ensures r == a
         { q := a; }
         "#;
-        let err = parse(src).unwrap_err();
-        assert!(err.contains("not a declared result"), "got: {}", err);
+        let s = parse(src).unwrap();
+        let err = crate::sema::analyze(&s).unwrap_err();
+        assert!(
+            err.message.contains("undeclared variable"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -582,8 +765,9 @@ mod tests {
           ensures r == a
         { r := a; }
         "#;
-        let err = parse(src).unwrap_err();
-        assert!(err.contains("never assigned"), "got: {}", err);
+        let s = parse(src).unwrap();
+        let err = crate::sema::analyze(&s).unwrap_err();
+        assert!(err.message.contains("never assigned"), "got: {}", err.message);
     }
 
     #[test]

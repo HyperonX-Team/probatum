@@ -1,0 +1,35 @@
+// The classic loop, and the classic loop *proof*.
+//
+// A loop is an infinite family of executions — testing it is exactly the
+// thing that does not work. What works is an INDUCTIVE INVARIANT: a property
+// that (1) holds before the loop, (2) is preserved by every iteration, and
+// (3) implies the postcondition when the guard finally fails.
+//
+// `ic` checks all three, plus termination (the `decreases` clause), and
+// cross-checks the result by *executing* the loop on every input in the
+// domain. Two independent methods: one executes, one reasons.
+spec sum_to(n: int[0..100])
+  returns (s: int[0..5050])
+  locals (i: int[0..101], acc: int[0..5050])
+  requires n >= 0
+  ensures  s == sum(k in 0..n: k)
+  ensures  s >= 0
+{
+  i := 0;
+  acc := 0;
+
+  // INVARIANT: `acc` is exactly the sum of everything counted so far, and
+  // `i` is how many things that is. Note the bound `i - 1`: symbolic bounds
+  // are what make this expressible.
+  while i <= n
+    invariant acc == sum(k in 0..i - 1: k)
+    invariant i >= 0
+    invariant i <= n + 1
+    decreases n - i + 1
+  {
+    acc := acc + i;
+    i := i + 1;
+  }
+
+  s := acc;
+}

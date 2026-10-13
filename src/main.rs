@@ -6,12 +6,15 @@
 //! independent verification path can re-derive from scratch.
 
 mod ast;
-mod bdd; mod bitblast; mod prove;
+mod bdd;
+mod bitblast;
 mod eval;
 mod lexer;
 mod parser;
+mod prove;
 mod sema;
 mod sha256;
+mod synth;
 
 fn main() {
     println!("ic — the intent compiler");

@@ -198,6 +198,14 @@ fn join(a: &Type, b: &Type) -> Type {
     }
 }
 
+/// Full semantic check of a spec, with an *external* body attached
+/// (used by the synthesizer to vet candidates before bothering the prover).
+pub fn analyze_with_body(spec: &Spec, body: &[Assign]) -> Result<(), SemError> {
+    let mut with_body = spec.clone();
+    with_body.body = Some(body.to_vec());
+    analyze(&with_body)
+}
+
 /// Full semantic check of a spec.
 pub fn analyze(spec: &Spec) -> Result<(), SemError> {
     // Unique parameter names.

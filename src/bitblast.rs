@@ -3,7 +3,7 @@
 //! While the exhaustive engine speaks i64 and walks the input domain one
 //! vector at a time, this module speaks *boolean circuits* and reasons about
 //! all inputs at once. The two engines share only `eval.rs` as their
-//! specification — they share no code — so agreement between them is
+//! specification â€” they share no code â€” so agreement between them is
 //! genuine cross-validation, not a tautology.
 //!
 //! ## Semantics mirrored from `eval.rs`
@@ -11,22 +11,22 @@
 //! Every compiled node carries a `fault` signal alongside its value bits:
 //!
 //! * `fault(x)` = "evaluating x diverges from the evaluator's happy path"
-//!   (division by zero — the only fault representable in this subset).
+//!   (division by zero â€” the only fault representable in this subset).
 //! * `ite` is lazy: the untaken branch's fault must not leak
-//!   (`fault = fc ∨ (c ∧ ft) ∨ (¬c ∧ fe)`), mirroring the evaluator.
-//! * `&&`/`||` short-circuit: `fault(a ∧ b) = fault(a) ∨ (val(a) ∧ fault(b))`.
+//!   (`fault = fc âˆ¨ (c âˆ§ ft) âˆ¨ (Â¬c âˆ§ fe)`), mirroring the evaluator.
+//! * `&&`/`||` short-circuit: `fault(a âˆ§ b) = fault(a) âˆ¨ (val(a) âˆ§ fault(b))`.
 //!
 //! Bad state (what we prove *unsatisfiable*):
 //!
 //! ```text
-//! bad = domain_ok ∧ pre_ok ∧ (fault ∨ ¬ensures ∨ out_of_declared_range)
+//! bad = domain_ok âˆ§ pre_ok âˆ§ (fault âˆ¨ Â¬ensures âˆ¨ out_of_declared_range)
 //! ```
 //!
 //! ## Supported fragment
 //!
 //! `+ - * / %`, comparisons, boolean logic, `if`, `min`, `max`.
 //! Division/modulo circuits are deliberately deferred (see ROADMAP): when a
-//! spec contains them, the bitblaster **declines** rather than guessing —
+//! spec contains them, the bitblaster **declines** rather than guessing â€”
 //! the prover then falls back to the exhaustive or statistical engine. A
 //! declined engine is never a false proof.
 
@@ -39,7 +39,7 @@ use crate::sema;
 pub struct IVal {
     pub bits: Vec<u32>,
     pub fault: u32,
-    /// Static range of this expression (from type inference) — the bits
+    /// Static range of this expression (from type inference) â€” the bits
     /// encode values within exactly this range.
     pub range: IntRange,
 }
@@ -55,7 +55,7 @@ pub struct BVal {
 pub enum BlastError {
     /// This spec uses an operator the bitblaster does not yet implement.
     Unsupported(&'static str),
-    /// Division by zero *symbolically* reachable — handled via fault signal,
+    /// Division by zero *symbolically* reachable â€” handled via fault signal,
     /// but division itself is Unsupported until circuits land (see above).
     Budget(BddError),
 }
@@ -65,7 +65,7 @@ impl std::fmt::Display for BlastError {
         match self {
             BlastError::Unsupported(op) => write!(
                 f,
-                "bitblaster declines `{}` — circuit not implemented; falling back is correct, guessing is not",
+                "bitblaster declines `{}` â€” circuit not implemented; falling back is correct, guessing is not",
                 op
             ),
             BlastError::Budget(e) => write!(f, "BDD budget: {}", e),
@@ -91,11 +91,22 @@ pub struct BitBlaster<'a> {
     pub bdd: &'a mut Bdd,
     /// Next free BDD variable index.
     next_var: u32,
+    /// Array name â†’ element bit-vectors, in index order.
+    ///
+    /// Arrays are not a special theory here: they are exactly `N` integer
+    /// variables, and `a[i]` with a *symbolic* index compiles to an ITE chain
+    /// over them. That is exact for fixed-size arrays, which is what makes
+    /// array reasoning decidable instead of an approximation.
+    pub arrays: std::collections::HashMap<String, Vec<IVal>>,
 }
 
 impl<'a> BitBlaster<'a> {
     pub fn new(bdd: &'a mut Bdd) -> Self {
-        BitBlaster { bdd, next_var: 0 }
+        BitBlaster {
+            bdd,
+            next_var: 0,
+            arrays: std::collections::HashMap::new(),
+        }
     }
 
     pub fn vars_used(&self) -> u32 {
@@ -109,7 +120,7 @@ impl<'a> BitBlaster<'a> {
     }
 
     /// A constant integer as bits over `range` (const must lie in range).
-    /// Constant bits are terminals — they consume no variable indices.
+    /// Constant bits are terminals â€” they consume no variable indices.
     pub fn int_const(&mut self, v: i64, range: IntRange) -> Result<IVal, BlastError> {
         let w = width_for(range);
         let mut bits = Vec::with_capacity(w);
@@ -144,8 +155,85 @@ impl<'a> BitBlaster<'a> {
         })
     }
 
+    /// Allocate `slots` leaf bit-vectors of the given widths, **interleaved**
+    /// by bit position (Bryant ordering), and return their bits.
+    pub fn alloc_slots(&mut self, widths: &[usize]) -> Result<Vec<Vec<u32>>, BlastError> {
+        let max_w = widths.iter().copied().max().unwrap_or(0);
+        let mut out: Vec<Vec<u32>> = widths.iter().map(|_| Vec::new()).collect();
+        for bit in 0..max_w {
+            for (slot, w) in widths.iter().enumerate() {
+                if bit < *w {
+                    let var = self.fresh();
+                    let node = self.bdd.var_node(var).map_err(BlastError::Budget)?;
+                    out[slot].push(node);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Allocate all parameters â€” scalars and arrays â€” with interleaved
+    /// ordering. An array of `N` elements becomes `N` slots, so arrays are
+    /// exactly `N` integer variables: no new theory, no approximation.
+    pub fn alloc_params(
+        &mut self,
+        layout: &[(String, IntRange, usize)],
+    ) -> Result<
+        (
+            std::collections::HashMap<String, IVal>,
+            std::collections::HashMap<String, Vec<IVal>>,
+        ),
+        BlastError,
+    > {
+        let mut widths: Vec<usize> = Vec::new();
+        let mut slice_of: Vec<(String, IntRange, usize, usize)> = Vec::new();
+        for (name, range, count) in layout {
+            let w = width_for(*range);
+            let start = widths.len();
+            for _ in 0..*count {
+                widths.push(w);
+            }
+            slice_of.push((name.clone(), *range, start, *count));
+        }
+        let slots = self.alloc_slots(&widths)?;
+
+        let mut scalars = std::collections::HashMap::new();
+        let mut arrays = std::collections::HashMap::new();
+        for (name, range, start, count) in slice_of {
+            if count == 1 {
+                scalars.insert(
+                    name,
+                    IVal {
+                        bits: slots[start].clone(),
+                        fault: FALSE,
+                        range,
+                    },
+                );
+            } else {
+                let elems: Vec<IVal> = (0..count)
+                    .map(|k| IVal {
+                        bits: slots[start + k].clone(),
+                        fault: FALSE,
+                        range,
+                    })
+                    .collect();
+                arrays.insert(name, elems);
+            }
+        }
+        Ok((scalars, arrays))
+    }
+
+    /// Equality of a compiled integer against a constant.
+    fn eq_const(&mut self, v: &IVal, k: i64) -> Result<u32, BlastError> {
+        let c = self.int_const(k, IntRange::new(k, k))?;
+        let w = v.bits.len().max(c.bits.len());
+        let a = self.sign_extend(v, w)?;
+        let b = self.sign_extend(&c, w)?;
+        self.bits_eq(&a, &b)
+    }
+
     /// Allocate all parameters with **interleaved** variable ordering:
-    /// bit 0 of param 0, bit 0 of param 1, …, bit 1 of param 0, …
+    /// bit 0 of param 0, bit 0 of param 1, â€¦, bit 1 of param 0, â€¦
     ///
     /// This is the Bryant-style ordering that keeps ripple-carry chains
     /// (and comparators) local: for `a - amount` the corresponding bits of
@@ -153,7 +241,7 @@ impl<'a> BitBlaster<'a> {
     /// reuse nodes instead of interleaving across whole 9-bit blocks.
     /// Param-major ordering made `transfer_funds` explode past 5M nodes;
     /// interleaved proves it in a few thousand. (Cross-validation caught
-    /// no *correctness* difference — this is purely about size.)
+    /// no *correctness* difference â€” this is purely about size.)
     pub fn param_bits_interleaved(
         &mut self,
         ranges: &[IntRange],
@@ -183,7 +271,7 @@ impl<'a> BitBlaster<'a> {
 
     /// `domain_ok`: the raw bit pattern lies within the declared range.
     /// (Bit patterns outside [lo, hi] exist whenever the range isn't a full
-    /// two's-complement window — e.g. `int[0..255]` in 9 bits admits -1.)
+    /// two's-complement window â€” e.g. `int[0..255]` in 9 bits admits -1.)
     pub fn in_domain(&mut self, v: &IVal, range: IntRange) -> Result<u32, BlastError> {
         let ge_lo = self.signed_ge(v, range.lo)?;
         let le_hi = self.signed_le(v, range.hi)?;
@@ -212,17 +300,17 @@ impl<'a> BitBlaster<'a> {
     }
 
     /// Ripple-carry add of two equally-wide bitvectors; returns w bits
-    /// (carry dropped — caller's static range analysis guarantees the true
+    /// (carry dropped â€” caller's static range analysis guarantees the true
     /// sum fits, which the `range` field documents).
     fn add_bits(&mut self, a: &[u32], b: &[u32]) -> Result<Vec<u32>, BlastError> {
         debug_assert_eq!(a.len(), b.len());
         let mut carry = FALSE;
         let mut out = Vec::with_capacity(a.len());
         for i in 0..a.len() {
-            // sum = a ⊕ b ⊕ carry
+            // sum = a âŠ• b âŠ• carry
             let axb = self.bdd.xor(a[i], b[i]).map_err(BlastError::Budget)?;
             let sum = self.bdd.xor(axb, carry).map_err(BlastError::Budget)?;
-            // carry' = (a ∧ b) ∨ (axb ∧ carry)
+            // carry' = (a âˆ§ b) âˆ¨ (axb âˆ§ carry)
             let ab = self.bdd.and(a[i], b[i]).map_err(BlastError::Budget)?;
             let abc = self.bdd.and(axb, carry).map_err(BlastError::Budget)?;
             carry = self.bdd.or(ab, abc).map_err(BlastError::Budget)?;
@@ -251,7 +339,7 @@ impl<'a> BitBlaster<'a> {
         // borrow-out of a - b: true iff a < b (unsigned).
         let mut borrow = FALSE;
         for i in 0..a.len() {
-            // borrow' = (~a ∧ b) ∨ (~a ∧ borrow) ∨ (b ∧ borrow)
+            // borrow' = (~a âˆ§ b) âˆ¨ (~a âˆ§ borrow) âˆ¨ (b âˆ§ borrow)
             let na = self.bdd.neg(a[i]).map_err(BlastError::Budget)?;
             let nab = self.bdd.and(na, b[i]).map_err(BlastError::Budget)?;
             let nabr = self.bdd.and(na, borrow).map_err(BlastError::Budget)?;
@@ -274,7 +362,7 @@ impl<'a> BitBlaster<'a> {
     }
 
     fn signed_ge(&mut self, v: &IVal, k: i64) -> Result<u32, BlastError> {
-        // v >= k  ⟺  !(v < k)
+        // v >= k  âŸº  !(v < k)
         let c = self.int_const(k, IntRange::new(k, k))?;
         let w = v.bits.len().max(c.bits.len());
         let a = self.sign_extend(v, w)?;
@@ -309,7 +397,9 @@ impl<'a> BitBlaster<'a> {
         e: &Expr,
         env: &std::collections::HashMap<String, IVal>,
     ) -> Result<IVal, BlastError> {
-        let range = match sema::infer_int(e, env_ranges(env)) {
+        // Type inference must see array variables too — an array is not a
+        // scalar, so it lives in `self.arrays` rather than in `env`.
+        let range = match sema::infer_int_bindings(e, &self.scope_bindings(env)) {
             Ok(r) => r,
             Err(_) => return Err(BlastError::Unsupported("expression out of int fragment")),
         };
@@ -405,11 +495,56 @@ impl<'a> BitBlaster<'a> {
             Expr::Forall { .. } | Expr::Exists { .. } => Err(BlastError::Unsupported(
                 "quantifier in int position",
             )),
-            // Arrays need read-over-write in the symbolic state, which the
-            // Hoare path removes before we get here. Decline honestly.
-            Expr::ArrayRead(..) | Expr::Len(_) => Err(BlastError::Unsupported(
-                "array fragment (use the exhaustive or Hoare engine)",
-            )),
+            // ---- arrays: ITE chains over element variables ------------------
+            // `a[i]` with a symbolic `i` is exactly
+            //   ite(i == 0, a0, ite(i == 1, a1, â€¦ , a_{N-1}))
+            // and an out-of-range index is a FAULT (the classic out-of-bounds
+            // bug, turned into a proof obligation).
+            Expr::ArrayRead(name, idx) => {
+                let elems = self
+                    .arrays
+                    .get(name)
+                    .cloned()
+                    .ok_or(BlastError::Unsupported("unknown array"))?;
+                let iv = self.blast_int(idx, env)?;
+                let n = elems.len() as i64;
+                // bounds: 0 <= i <= n-1
+                let ge0 = self.signed_ge(&iv, 0)?;
+                let le_n = self.signed_le(&iv, n - 1)?;
+                let inb = self.bdd.and(ge0, le_n).map_err(BlastError::Budget)?;
+                let oob = self.bdd.neg(inb).map_err(BlastError::Budget)?;
+                let fault = self.bdd.or(iv.fault, oob).map_err(BlastError::Budget)?;
+
+                let elem_range = elems[0].range;
+                let w = elems.iter().map(|e| e.bits.len()).max().unwrap_or(1);
+                let mut acc = self.sign_extend(&elems[elems.len() - 1], w)?;
+                for k in (0..elems.len() - 1).rev() {
+                    let cond = self.eq_const(&iv, k as i64)?;
+                    let sel = self.sign_extend(&elems[k], w)?;
+                    let mut bits = Vec::with_capacity(w);
+                    for b in 0..w {
+                        bits.push(
+                            self.bdd
+                                .ite(cond, sel[b], acc[b])
+                                .map_err(BlastError::Budget)?,
+                        );
+                    }
+                    acc = bits;
+                }
+                Ok(IVal {
+                    bits: acc,
+                    fault,
+                    range: elem_range,
+                })
+            }
+            Expr::Len(name) => {
+                let elems = self
+                    .arrays
+                    .get(name)
+                    .ok_or(BlastError::Unsupported("unknown array"))?;
+                let n = elems.len() as i64;
+                self.int_const(n, IntRange::new(n, n))
+            }
         }
     }
 
@@ -419,11 +554,48 @@ impl<'a> BitBlaster<'a> {
         e: &Expr,
         env: &std::collections::HashMap<String, IVal>,
     ) -> Result<IntRange, BlastError> {
-        sema::infer_int(e, env_ranges(env))
+        sema::infer_int_bindings(e, &self.scope_bindings(env))
             .map_err(|_| BlastError::Unsupported("expression out of int fragment"))
     }
 
-    /// Bitwise select: `ite(c, a, b)` over two integer values.
+    /// Every name in scope for type inference: the scalar environment plus
+    /// every allocated array (an array is `N` integers, declared as such).
+    fn scope_bindings(
+        &self,
+        env: &std::collections::HashMap<String, IVal>,
+    ) -> Vec<crate::ast::Binding> {
+        let mut b: Vec<crate::ast::Binding> = env
+            .iter()
+            .map(|(k, v)| crate::ast::Binding {
+                name: k.clone(),
+                ty: Type::Int(v.range),
+            })
+            .collect();
+        for (name, elems) in &self.arrays {
+            if elems.is_empty() {
+                continue;
+            }
+            b.push(crate::ast::Binding {
+                name: name.clone(),
+                ty: Type::Array {
+                    index: IntRange::new(0, elems.len() as i64 - 1),
+                    elem: elems[0].range,
+                },
+            });
+        }
+        b
+    }
+
+    /// Bitwise select: `ite(c, a, b)` over two integer values, with **lazy**
+    /// fault semantics.
+    ///
+    /// The fault must be selected too, not OR-ed: `select` is how the
+    /// quantifier unroller guards iterations past the real bound, and those
+    /// iterations may well read out of bounds (they reference `a[k]` for a `k`
+    /// the guard excludes). Propagating both branches' faults made the
+    /// symbolic engine accuse a *correct* program — caught by the rule that
+    /// every symbolic counterexample is confirmed by the evaluator before it
+    /// is reported.
     fn select(&mut self, c: u32, a: IVal, b: IVal) -> Result<IVal, BlastError> {
         let w = a.bits.len().max(b.bits.len());
         let aa = self.sign_extend(&a, w)?;
@@ -432,7 +604,7 @@ impl<'a> BitBlaster<'a> {
         for i in 0..w {
             bits.push(self.bdd.ite(c, aa[i], bb[i]).map_err(BlastError::Budget)?);
         }
-        let fault = self.bdd.or(a.fault, b.fault).map_err(BlastError::Budget)?;
+        let fault = self.bdd.ite(c, a.fault, b.fault).map_err(BlastError::Budget)?;
         Ok(IVal {
             bits,
             fault,
@@ -524,7 +696,7 @@ impl<'a> BitBlaster<'a> {
                     range,
                 })
             }
-            // Comparisons produce bools — never reached from blast_int on a
+            // Comparisons produce bools â€” never reached from blast_int on a
             // bool-typed node, but the type checker routes them there only
             // when the caller is wrong. Guard anyway.
             _ => Err(BlastError::Unsupported("comparison in int position")),
@@ -635,7 +807,7 @@ impl<'a> BitBlaster<'a> {
             }
             Expr::Param(_) | Expr::Result(_) => {
                 // A bare name in bool position would be a bool-typed variable;
-                // v0.1 int-only params ⇒ unreachable if sema passed.
+                // v0.1 int-only params â‡’ unreachable if sema passed.
                 Err(BlastError::Unsupported("bool variable"))
             }
             // ---- quantifiers: unrolled symbolically -----------------------
@@ -651,7 +823,7 @@ impl<'a> BitBlaster<'a> {
                     let mut inner = env.clone();
                     inner.insert(var.clone(), self.int_const(k, IntRange::new(k, k))?);
                     let b = self.blast_bool(body, &inner)?;
-                    // (k > hi) ∨ body(k)
+                    // (k > hi) âˆ¨ body(k)
                     let past = self.blast_bool(
                         &Expr::Binary(BinOp::Gt, Box::new(Expr::IntLit(k)), hi.clone()),
                         env,
@@ -669,7 +841,7 @@ impl<'a> BitBlaster<'a> {
                     let mut inner = env.clone();
                     inner.insert(var.clone(), self.int_const(k, IntRange::new(k, k))?);
                     let b = self.blast_bool(body, &inner)?;
-                    // (k <= hi) ∧ body(k)
+                    // (k <= hi) âˆ§ body(k)
                     let within = self.blast_bool(
                         &Expr::Binary(BinOp::Le, Box::new(Expr::IntLit(k)), hi.clone()),
                         env,
@@ -696,32 +868,25 @@ impl<'a> BitBlaster<'a> {
     }
 
     /// Bad state for a *predicate* obligation (no body): the assignment
-    /// `domain_ok ∧ pre ∧ ¬post` must be unsatisfiable for the obligation to
+    /// `domain_ok âˆ§ pre âˆ§ Â¬post` must be unsatisfiable for the obligation to
     /// hold. Used by the Hoare path, where obligations are implications over
     /// the program's variables rather than contracts over a body.
+    ///
+    /// `domain_parts` lists every leaf bit-vector that must be constrained to
+    /// its declared range â€” scalars *and* every array element, since an array
+    /// element is just another integer variable with a domain.
     pub fn bad_state_predicate(
         &mut self,
-        spec: &Spec,
+        domain_parts: &[(String, IVal, IntRange)],
         param_vals: &std::collections::HashMap<String, IVal>,
-        param_nodes: &[(String, IVal)],
         pre: &[Expr],
         post: &[Expr],
     ) -> Result<u32, BlastError> {
-        // 1. domain_ok over every quantified variable.
+        // 1. domain_ok over every leaf variable.
         let mut domain_ok = TRUE;
-        for (name, v) in param_nodes {
-            let range = match spec.params.iter().find(|b| &b.name == name) {
-                Some(b) => match b.ty {
-                    Type::Int(r) => r,
-                    Type::Decimal { stored, .. } => stored,
-                    Type::Bool => IntRange::new(0, 1),
-                    Type::Array { .. } => {
-                        return Err(BlastError::Unsupported("array in obligation"))
-                    }
-                },
-                None => return Err(BlastError::Unsupported("unknown variable")),
-            };
-            let ok = self.in_domain(v, range)?;
+        for (name, v, range) in domain_parts {
+            let _ = name;
+            let ok = self.in_domain(v, *range)?;
             domain_ok = self.bdd.and(domain_ok, ok).map_err(BlastError::Budget)?;
         }
 
@@ -782,18 +947,18 @@ impl<'a> BitBlaster<'a> {
         let mut post_fault = FALSE;
         for clause in &spec.requires {
             let compiled = self.blast_bool(clause, param_vals)?;
-            // Faulting precondition ⇒ out of domain (matches eval: fault ⇒ false).
+            // Faulting precondition â‡’ out of domain (matches eval: fault â‡’ false).
             let no_fault = self.bdd.neg(compiled.fault).map_err(BlastError::Budget)?;
             let holds = self.bdd.and(no_fault, compiled.val).map_err(BlastError::Budget)?;
             post = self.bdd.and(post, holds).map_err(BlastError::Budget)?;
             post_fault = self.bdd.or(post_fault, compiled.fault).map_err(BlastError::Budget)?;
         }
-        // `post` now holds pre_ok ∧ pre_true; pre_fault marks faulting pre.
+        // `post` now holds pre_ok âˆ§ pre_true; pre_fault marks faulting pre.
         let pre_ok = post;
         let _ = post_fault;
 
         // Result-range checks + ensures, with body substituted in.
-        // Results are matched to their assignment BY NAME — the body may
+        // Results are matched to their assignment BY NAME â€” the body may
         // assign results in any order.
         let mut viol = FALSE;
         for res in &spec.results {
@@ -820,7 +985,7 @@ impl<'a> BitBlaster<'a> {
             viol = self.bdd.or(viol, compiled.fault).map_err(BlastError::Budget)?;
         }
 
-        // bad = domain ∧ pre ∧ viol
+        // bad = domain âˆ§ pre âˆ§ viol
         let d = self.bdd.and(domain_ok, pre_ok).map_err(BlastError::Budget)?;
         let bad = self.bdd.and(d, viol).map_err(BlastError::Budget)?;
         Ok(bad)
@@ -847,7 +1012,7 @@ fn env_ranges(
     env.iter().map(|(k, v)| (k.clone(), v.range)).collect()
 }
 
-/// Build the sequential body substitution: result name → param-only expr.
+/// Build the sequential body substitution: result name â†’ param-only expr.
 fn body_subst_map(body: &[Assign]) -> Result<std::collections::HashMap<String, Expr>, BlastError> {
     let mut map = std::collections::HashMap::new();
     for a in body {
@@ -907,9 +1072,9 @@ fn subst_expr(e: &Expr, map: &std::collections::HashMap<String, Expr>) -> Expr {
 
 /// Does this expression use a fragment the bitblaster declines?
 ///
-/// Division/modulo circuits are not implemented; arrays need a theory of
-/// read-over-write the symbolic state does not carry (the Hoare path removes
-/// them first). Quantifiers ARE supported — they are unrolled exactly.
+/// Division/modulo circuits are not implemented â€” the one remaining gap.
+/// Arrays and quantifiers ARE supported: arrays are `N` integer variables
+/// with ITE-chain access, and quantifiers are unrolled exactly.
 pub fn contains_division(e: &Expr) -> bool {
     match e {
         Expr::Binary(BinOp::Div | BinOp::Mod, _, _) => true,
@@ -917,8 +1082,8 @@ pub fn contains_division(e: &Expr) -> bool {
         Expr::Unary(_, a) => contains_division(a),
         Expr::Ite(c, a, b) => contains_division(c) || contains_division(a) || contains_division(b),
         Expr::Min(a, b) | Expr::Max(a, b) => contains_division(a) || contains_division(b),
-        Expr::ArrayRead(_, i) => true || contains_division(i),
-        Expr::Len(_) => false, // a constant; harmless
+        Expr::ArrayRead(_, i) => contains_division(i),
+        Expr::Len(_) => false,
         Expr::Forall { lo, hi, body, .. }
         | Expr::Exists { lo, hi, body, .. }
         | Expr::Sum { lo, hi, body, .. } => {

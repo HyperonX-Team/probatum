@@ -547,6 +547,15 @@ impl<'a> Machine<'a> {
                 }
             }
         }
+        // Array *results* need the same treatment: an array write targets one
+        // element, so the rest of the array must already exist. (Found by a
+        // counterexample: "array not initialised" on the reverse_text spec.)
+        for r in &spec.results {
+            if let Type::Array { index, elem } = r.ty {
+                let n = index.size() as usize;
+                env.arrays.entry(r.name.clone()).or_insert_with(|| vec![elem.lo; n]);
+            }
+        }
         Ok(Machine {
             spec,
             env,

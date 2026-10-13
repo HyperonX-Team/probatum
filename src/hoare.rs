@@ -259,10 +259,29 @@ fn subst_array_write(e: &Expr, array: &str, index: &Expr, value: &Expr) -> Expr 
             Box::new(subst_array_write(b, array, index, value)),
         ),
         Expr::Len(n) => Expr::Len(n.clone()),
-        // Under binders the array may not be touched, or the bound variable
-        // may shadow the index — leaving the body alone is sound because a
-        // quantifier body cannot assign.
-        Expr::Forall { .. } | Expr::Exists { .. } | Expr::Sum { .. } => e.clone(),
+        // Recurse into quantifier bodies too. An earlier version skipped them,
+        // reasoning that a bound variable might shadow the write's index —
+        // but the type checker already rejects shadowing, and skipping meant
+        // `forall i in 0..3: r[i] == ...` kept its OLD `r[i]` after the writes
+        // to `r`, so a correct program was accused of violating its contract.
+        Expr::Forall { var, lo, hi, body } => Expr::Forall {
+            var: var.clone(),
+            lo: Box::new(subst_array_write(lo, array, index, value)),
+            hi: Box::new(subst_array_write(hi, array, index, value)),
+            body: Box::new(subst_array_write(body, array, index, value)),
+        },
+        Expr::Exists { var, lo, hi, body } => Expr::Exists {
+            var: var.clone(),
+            lo: Box::new(subst_array_write(lo, array, index, value)),
+            hi: Box::new(subst_array_write(hi, array, index, value)),
+            body: Box::new(subst_array_write(body, array, index, value)),
+        },
+        Expr::Sum { var, lo, hi, body } => Expr::Sum {
+            var: var.clone(),
+            lo: Box::new(subst_array_write(lo, array, index, value)),
+            hi: Box::new(subst_array_write(hi, array, index, value)),
+            body: Box::new(subst_array_write(body, array, index, value)),
+        },
     }
 }
 
@@ -402,6 +421,23 @@ pub fn obligations(spec: &Spec, prog: &Program) -> Vec<Obligation> {
     let post = conjoin(spec.ensures.clone());
     let wp = gen.wp_block(prog, post);
     let mut obs = gen.obligations;
+
+    // The contract obligation is `requires ⇒ wp(program, ensures)`. The
+    // weakest precondition mentions whatever the program touches — locals
+    // included — so it is quantified over exactly its free variables. That
+    // is both correct and minimal: an unmentioned variable cannot change the
+    // truth of the implication.
+    let mut free = std::collections::HashSet::new();
+    for e in &spec.requires {
+        free_vars(e, &mut free);
+    }
+    free_vars(&wp, &mut free);
+    let vars: Vec<Binding> = spec
+        .all_vars()
+        .into_iter()
+        .filter(|b| free.contains(&b.name))
+        .collect();
+
     obs.insert(
         0,
         Obligation {
@@ -409,19 +445,7 @@ pub fn obligations(spec: &Spec, prog: &Program) -> Vec<Obligation> {
             location: "spec".to_string(),
             assumptions: spec.requires.clone(),
             goal: wp,
-            vars: {
-                let refs: Vec<&Expr> = spec
-                    .requires
-                    .iter()
-                    .chain(spec.ensures.iter())
-                    .collect();
-                let mut v = scope_vars(spec, &refs);
-                // The contract quantifies over the *inputs*; locals and
-                // intermediate results are internal.
-                v.retain(|b| spec.params.iter().any(|p| p.name == b.name)
-                    || spec.results.iter().any(|r| r.name == b.name));
-                v
-            },
+            vars,
         },
     );
     obs

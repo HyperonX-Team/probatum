@@ -120,11 +120,106 @@ fn check_expr(
                         };
                         Ok(Type::Int(IntRange::new(lo, hi)))
                     }
-                    _ => err(format!("`{}` expects int operands, got `{}` and `{}`", op, lt, rt)),
+                    // ---- exact decimal arithmetic ---------------------------
+                    // Money is a scaled integer. `+`/`-` on the *stored*
+                    // values is exact because both sides share a scale; that
+                    // is the whole reason to prefer fixed point over binary
+                    // floating point for currency.
+                    (
+                        Type::Decimal {
+                            scale: s1,
+                            stored: a,
+                        },
+                        Type::Decimal {
+                            scale: s2,
+                            stored: b,
+                        },
+                    ) => {
+                        if s1 != s2 {
+                            return err(format!(
+                                "cannot `{}` decimals with different scales (dec<{}> and dec<{}>) — \
+                                 convert explicitly so the rounding is visible",
+                                op, s1, s2
+                            ));
+                        }
+                        let (lo, hi) = match op {
+                            BinOp::Add => (a.lo.saturating_add(b.lo), a.hi.saturating_add(b.hi)),
+                            BinOp::Sub => (a.lo.saturating_sub(b.hi), a.hi.saturating_sub(b.lo)),
+                            BinOp::Mul => {
+                                // Multiplying two scaled values squares the
+                                // scale — almost never what money wants, so
+                                // make the caller say what they mean.
+                                return err(format!(
+                                    "dec<{}> * dec<{}> would produce scale {} — multiply by a \
+                                     plain int instead (e.g. `price * 3`), or scale explicitly",
+                                    s1,
+                                    s2,
+                                    s1 + s2
+                                ));
+                            }
+                            _ => unreachable!(),
+                        };
+                        Ok(Type::Decimal {
+                            scale: s1,
+                            stored: IntRange::new(lo, hi),
+                        })
+                    }
+                    // decimal ± int: the int is a count, the scale is kept.
+                    (
+                        Type::Decimal { scale, stored: a },
+                        Type::Int(b),
+                    ) => Ok(Type::Decimal {
+                        scale,
+                        stored: match op {
+                            BinOp::Mul => IntRange::new(
+                                a.lo.saturating_mul(b.lo.min(b.hi)),
+                                a.hi.saturating_mul(b.lo.max(b.hi)),
+                            ),
+                            BinOp::Add => IntRange::new(
+                                a.lo.saturating_add(b.lo),
+                                a.hi.saturating_add(b.hi),
+                            ),
+                            _ => IntRange::new(
+                                a.lo.saturating_sub(b.hi),
+                                a.hi.saturating_sub(b.lo),
+                            ),
+                        },
+                    }),
+                    (
+                        Type::Int(a),
+                        Type::Decimal { scale, stored: b },
+                    ) => Ok(Type::Decimal {
+                        scale,
+                        stored: match op {
+                            BinOp::Mul => IntRange::new(
+                                b.lo.saturating_mul(a.lo.min(a.hi)),
+                                b.hi.saturating_mul(a.lo.max(a.hi)),
+                            ),
+                            BinOp::Add => IntRange::new(
+                                b.lo.saturating_add(a.lo),
+                                b.hi.saturating_add(a.hi),
+                            ),
+                            _ => IntRange::new(
+                                b.lo.saturating_sub(a.hi),
+                                b.hi.saturating_sub(a.lo),
+                            ),
+                        },
+                    }),
+                    _ => err(format!("`{}` expects numeric operands, got `{}` and `{}`", op, lt, rt)),
                 },
                 BinOp::Div | BinOp::Mod => match (lt, rt) {
                     (Type::Int(_), Type::Int(_)) => Ok(lt),
-                    _ => err(format!("`{}` expects int operands, got `{}` and `{}`", op, lt, rt)),
+                    // Dividing money by a count keeps the scale — exact when
+                    // it divides evenly, which the prover will check.
+                    (Type::Decimal { scale, stored }, Type::Int(_)) => Ok(Type::Decimal {
+                        scale,
+                        stored,
+                    }),
+                    _ => err(format!(
+                        "`{}` expects int operands (or a decimal divided by an int), \
+                         got `{}` and `{}`",
+                        op, lt, rt
+                    )),
                 },
                 BinOp::Eq | BinOp::Ne => {
                     if compatible(&lt, &rt) {
@@ -135,6 +230,25 @@ fn check_expr(
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => match (lt, rt) {
                     (Type::Int(_), Type::Int(_)) => Ok(Type::Bool),
+                    (Type::Decimal { scale: s1, .. }, Type::Decimal { scale: s2, .. })
+                        if s1 == s2 =>
+                    {
+                        Ok(Type::Bool)
+                    }
+                    // Comparing money to a bare int is a UNIT ERROR — 5 means
+                    // five units, the stored value means five cents. The one
+                    // sound exception is zero, which is scale-invariant, and
+                    // that is what `balance >= 0` needs.
+                    (Type::Decimal { .. }, Type::Int(r)) if r.lo == 0 && r.hi == 0 => Ok(Type::Bool),
+                    (Type::Int(r), Type::Decimal { .. }) if r.lo == 0 && r.hi == 0 => Ok(Type::Bool),
+                    (Type::Decimal { .. }, Type::Int(_)) | (Type::Int(_), Type::Decimal { .. }) => {
+                        err(format!(
+                            "cannot compare `{}` with `{}`: a decimal's stored value is scaled, \
+                             so comparing it to a bare integer would silently mix units — \
+                             compare against a decimal (e.g. `dec<2>[0..0]`) instead",
+                            lt, rt
+                        ))
+                    }
                     _ => err(format!("`{}` expects int operands, got `{}` and `{}`", op, lt, rt)),
                 },
                 BinOp::And | BinOp::Or => match (lt, rt) {
@@ -357,8 +471,15 @@ pub fn infer_int(e: &Expr, env: HashMap<String, IntRange>) -> Result<IntRange, S
             ty: Type::Int(*r),
         })
         .collect();
-    match check_expr(e, &bindings, &[], &[], None) {
+    infer_int_bindings(e, &bindings)
+}
+
+/// Range inference over an explicit binding list — the form the bitblaster
+/// needs, since its scope includes array variables (which are not scalars).
+pub fn infer_int_bindings(e: &Expr, bindings: &[Binding]) -> Result<IntRange, String> {
+    match check_expr(e, bindings, &[], &[], None) {
         Ok(Type::Int(r)) => Ok(r),
+        Ok(Type::Decimal { stored, .. }) => Ok(stored),
         Ok(other) => Err(format!("expected int, got `{}`", other)),
         Err(se) => Err(se.message),
     }

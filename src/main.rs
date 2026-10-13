@@ -675,6 +675,96 @@ spec consensus(v1: int[0..1], v2: int[0..1], v3: int[0..1])
   example (1, 1, 1) => (1)
 "#,
     ),
+    (
+        "sum_to_n.ic",
+        r#"// LOOPS. A loop is an infinite family of executions; testing it is exactly
+// what does not work. The answer is an inductive invariant: it holds on
+// entry, is preserved by every iteration, and implies the postcondition
+// when the guard fails. `decreases` adds termination.
+spec sum_to_n(n: int[0..100])
+  returns (s: int[0..5050])
+  locals (i: int[0..101], acc: int[0..5050])
+  requires n >= 0
+  ensures  s == sum(k in 0..n: k)
+  ensures  s >= 0
+{
+  i := 0;
+  acc := 0;
+  while i <= n
+    invariant acc == sum(k in 0..i - 1: k)
+    invariant i >= 0
+    invariant i <= n + 1
+    decreases n - i + 1
+  {
+    acc := acc + i;
+    i := i + 1;
+  }
+  s := acc;
+}
+"#,
+    ),
+    (
+        "array_sum.ic",
+        r#"// ARRAYS. An array is exactly N integer variables with a declared index
+// domain, and `a[i]` with a symbolic `i` is an ITE chain over them — exact
+// for fixed-size arrays. The invariant names a *slice*: the sum of
+// everything counted so far.
+spec array_sum(a: array[5] of int[0..20])
+  returns (s: int[0..100])
+  locals (i: int[0..5], acc: int[0..100])
+  ensures  s == sum(k in 0..4: a[k])
+  ensures  s >= 0
+{
+  i := 0;
+  acc := 0;
+  while i < 5
+    invariant acc == sum(k in 0..i - 1: a[k])
+    invariant i >= 0
+    invariant i <= 5
+    decreases 5 - i
+  {
+    acc := acc + a[i];
+    i := i + 1;
+  }
+  s := acc;
+}
+"#,
+    ),
+    (
+        "reverse_text.ic",
+        r#"// TEXT. A string is an array of character codes — 65..90 is A..Z. Not a
+// trick: that is what a string is, so every string property is an array
+// property. The contract quantifies over ALL positions at once.
+spec reverse_text(s: array[4] of int[65..90])
+  returns (r: array[4] of int[65..90])
+  ensures  forall i in 0..3: r[i] == s[3 - i]
+  ensures  forall i in 0..3: r[i] >= 65 && r[i] <= 90
+{
+  r[0] := s[3];
+  r[1] := s[2];
+  r[2] := s[1];
+  r[3] := s[0];
+}
+"#,
+    ),
+    (
+        "split_bill.ic",
+        r#"// MONEY. `dec<2>` is exact fixed point: the value is stored/10^2, so this
+// is 0.00 .. 1000.00 in cents. No IEEE-754 model, no rounding surprises.
+// Note what the type system refuses: comparing money to a bare integer is a
+// UNIT ERROR, and multiplying two decimals would square the scale.
+spec split_bill(total: dec<2>[0..100000], people: int[1..100])
+  returns (each: dec<2>[0..100000], rest: dec<2>[0..100000])
+  requires people >= 1
+  ensures  rest == total - each * people
+  ensures  rest >= 0
+  ensures  rest <= total
+{
+  each := total / people;
+  rest := total - each * people;
+}
+"#,
+    ),
 ];
 
 fn cmd_examples(args: &[String]) -> ExitCode {

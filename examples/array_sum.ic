@@ -1,0 +1,32 @@
+// Arrays, verified.
+//
+// An array here is not a special theory: it is exactly N integer variables
+// with a declared index domain. `a[i]` with a *symbolic* `i` compiles to an
+// ITE chain over those variables, which is exact for fixed-size arrays —
+// which is what makes array reasoning decidable rather than approximate.
+//
+// The loop invariant talks about a *slice* of the array:
+//     acc == sum(k in 0..i-1: a[k])
+// meaning "acc is the sum of everything counted so far". That single line is
+// what the prover proves inductive; the postcondition then follows at i == 5.
+spec array_sum(a: array[5] of int[0..20])
+  returns (s: int[0..100])
+  locals (i: int[0..5], acc: int[0..100])
+  ensures  s == sum(k in 0..4: a[k])
+  ensures  s >= 0
+{
+  i := 0;
+  acc := 0;
+
+  while i < 5
+    invariant acc == sum(k in 0..i - 1: a[k])
+    invariant i >= 0
+    invariant i <= 5
+    decreases 5 - i
+  {
+    acc := acc + a[i];
+    i := i + 1;
+  }
+
+  s := acc;
+}

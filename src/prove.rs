@@ -3,21 +3,21 @@
 //!
 //! ## Engine ladder
 //!
-//! 1. **Exhaustive** — walks every input in the domain. Complete (not
+//! 1. **Exhaustive** â€” walks every input in the domain. Complete (not
 //!    statistical) whenever it finishes. Shares only `eval.rs` with the
-//!    spec — it is the *definition* of correctness by construction.
-//! 2. **BDD (symbolic)** — bit-blasts the contract into a boolean function
+//!    spec â€” it is the *definition* of correctness by construction.
+//! 2. **BDD (symbolic)** â€” bit-blasts the contract into a boolean function
 //!    and asks whether the "bad state" is satisfiable over the *entire*
 //!    domain at once. Also complete. Shares no code with (1).
-//! 3. **Statistical** — for domains too large to enumerate or blast: random
-//!    sampling with a Clopper–Pearson upper bound. Never claims "proved";
+//! 3. **Statistical** â€” for domains too large to enumerate or blast: random
+//!    sampling with a Clopperâ€“Pearson upper bound. Never claims "proved";
 //!    it reports "no violation found in N samples; violation rate < X with
 //!    confidence 95%". Honest limits, honestly labeled.
 //!
 //! ## Cross-validation
 //!
 //! When both complete engines run, they must agree on the verdict. A
-//! disagreement is an *internal error* — we refuse to issue a certificate
+//! disagreement is an *internal error* â€” we refuse to issue a certificate
 //! rather than pick a winner. Two independent implementations agreeing is
 //! the strongest evidence a small tool like this can produce.
 //!
@@ -25,7 +25,7 @@
 //!
 //! A precondition that is unsatisfiable makes every contract trivially true
 //! ("proved" nothing). The prover checks that at least one input reaches
-//! the body — and reports the witness — before claiming success.
+//! the body â€” and reports the witness â€” before claiming success.
 
 use crate::ast;
 use crate::ast::*;
@@ -35,7 +35,7 @@ use crate::eval;
 use crate::sha256::sha256_hex;
 
 /// Name a flat input vector for human consumption: scalar parameters by
-/// name, array parameters element by element (`a[0]`, `a[1]`, …).
+/// name, array parameters element by element (`a[0]`, `a[1]`, â€¦).
 pub fn describe_inputs(spec: &Spec, inputs: &[i64]) -> Vec<(String, i64)> {
     let mut out = Vec::new();
     let mut k = 0usize;
@@ -123,7 +123,7 @@ pub struct ProverOptions {
 impl Default for ProverOptions {
     fn default() -> Self {
         ProverOptions {
-            exhaustive_budget: 100_000_000, // 10^8 inputs ≈ seconds in release
+            exhaustive_budget: 100_000_000, // 10^8 inputs â‰ˆ seconds in release
             bdd_budget: 5_000_000,
             samples: 100_000,
             confidence: 0.95,
@@ -136,9 +136,9 @@ impl Default for ProverOptions {
 ///
 /// Two paths, chosen by what the program actually is:
 ///
-/// * **Straight-line scalar code** — the original path: evaluate the body on
+/// * **Straight-line scalar code** â€” the original path: evaluate the body on
 ///   every input (exhaustive) and bit-blast the contract (BDD).
-/// * **Control flow or arrays** — the Hoare path: execute the program over
+/// * **Control flow or arrays** â€” the Hoare path: execute the program over
 ///   the domain *and* discharge the generated verification conditions
 ///   symbolically. Two independent methods again, for a different reason:
 ///   execution shows the loop behaves; the invariant proof shows it must.
@@ -265,15 +265,19 @@ fn prove_with_hoare(
             }),
             checked: total_checked,
             nodes: Some(worst_nodes),
-            notes: vec![format!(
-                "{} verification condition(s): contract, loop entry/preservation/exit{}",
-                obs.len(),
-                if crate::hoare::has_unproven_termination(prog) {
-                    " (no `decreases` clause given — PARTIAL correctness only)"
-                } else {
-                    ", and termination"
-                }
-            )],
+            notes: {
+                let mut v = vec![format!(
+                    "{} verification condition(s): contract, loop entry/preservation/exit{}",
+                    obs.len(),
+                    if crate::hoare::has_unproven_termination(prog) {
+                        " (no `decreases` clause given: PARTIAL correctness only)"
+                    } else {
+                        ", and termination"
+                    }
+                )];
+                v.extend(notes.iter().cloned());
+                v
+            },
         });
     }
 
@@ -301,7 +305,7 @@ fn prove_with_hoare(
     let verdict = if pre_witness.is_none() {
         Verdict::GaveUp {
             reason: format!(
-                "precondition is UNSATISFIABLE (vacuous) — {}",
+                "precondition is UNSATISFIABLE (vacuous) â€” {}",
                 vacuity_notes.join("; ")
             ),
         }
@@ -344,7 +348,7 @@ fn prove_straight(
     let (pre_witness, vacuity_notes) = check_vacuity(spec, body, opts, domain);
 
     if let Some(w) = &pre_witness {
-        let _ = w; // reachable — good
+        let _ = w; // reachable â€” good
     }
 
     let mut engines: Vec<EngineReport> = Vec::new();
@@ -442,7 +446,7 @@ fn prove_straight(
                 engine: "cross-validation".into(),
                 verdict: Verdict::GaveUp {
                     reason: format!(
-                        "ENGINES DISAGREE (exhaustive={:?}, bdd={:?}) — refusing to certify",
+                        "ENGINES DISAGREE (exhaustive={:?}, bdd={:?}) â€” refusing to certify",
                         a, b
                     ),
                 },
@@ -468,11 +472,11 @@ fn prove_straight(
         }
     };
 
-    // Vacuous precondition ⇒ "Proved" is meaningless; downgrade honestly.
+    // Vacuous precondition â‡’ "Proved" is meaningless; downgrade honestly.
     let verdict = if pre_witness.is_none() {
         Verdict::GaveUp {
             reason: format!(
-                "precondition is UNSATISFIABLE (vacuous) — {}",
+                "precondition is UNSATISFIABLE (vacuous) â€” {}",
                 vacuity_notes.join("; ")
             ),
         }
@@ -544,7 +548,7 @@ fn check_vacuity(
                 vec!["no input satisfies `requires` (via BDD)".into()],
             ),
             Err(e) => (
-                // Can't decide: assume reachable rather than refuse — the
+                // Can't decide: assume reachable rather than refuse â€” the
                 // vacuity check is a guard, not the proof itself.
                 Some(Vec::new()),
                 vec![format!("vacuity not decided: {}", e)],
@@ -670,7 +674,7 @@ fn run_exhaustive(
     let domain = spec.input_domain_size();
     if domain > budget {
         return Err(format!(
-            "domain of {} inputs exceeds budget of {} — declining (BDD or sampling next)",
+            "domain of {} inputs exceeds budget of {} â€” declining (BDD or sampling next)",
             domain, budget
         ));
     }
@@ -736,7 +740,7 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
     let (bad, vars_used, named) = {
         let mut bb = BitBlaster::new(&mut bdd);
         let mut env = std::collections::HashMap::new();
-        // Interleaved variable ordering — see bitblast::param_bits_interleaved.
+        // Interleaved variable ordering â€” see bitblast::param_bits_interleaved.
         let ranges: Vec<IntRange> = crate::ast::input_domains(spec);
         let vals = bb
             .param_bits_interleaved(&ranges)
@@ -771,7 +775,7 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
     }
 
     // Extract a concrete counterexample and CONFIRM it with the reference
-    // evaluator — a BDD bug must not produce a bogus certificate.
+    // evaluator â€” a BDD bug must not produce a bogus certificate.
     let assign = bdd_one_sat(&bdd, bad);
     let decoded = decode_params(spec, &named, &assign, &bdd);
     // How much of the domain is bad? (Level-aware counting; may saturate.)
@@ -803,15 +807,15 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
                 "counterexample extracted from BDD and independently confirmed by the evaluator"
                     .into(),
                 format!(
-                    "≈{} of the encoded input assignments violate the contract",
+                    "â‰ˆ{} of the encoded input assignments violate the contract",
                     violating
                 ),
             ],
         }),
         Ok(_) => {
-            // BDD claims violation, evaluator disagrees → internal error.
+            // BDD claims violation, evaluator disagrees â†’ internal error.
             Err(format!(
-                "internal: BDD found a 'counterexample' {:?} that the evaluator accepts — refusing to certify",
+                "internal: BDD found a 'counterexample' {:?} that the evaluator accepts â€” refusing to certify",
                 inputs
             ))
         }
@@ -830,7 +834,7 @@ pub struct ValidityResult {
     pub notes: Vec<String>,
 }
 
-/// Check `assumptions ⇒ goal` for **every** value of `vars` in their declared
+/// Check `assumptions â‡’ goal` for **every** value of `vars` in their declared
 /// domains. This is the shape every Hoare obligation has, and it is exactly
 /// what the existing engines already decide.
 pub fn check_validity(
@@ -851,13 +855,26 @@ pub fn check_validity(
     // engine cannot take (arrays), not the default. For loops the symbolic
     // check is both faster and the one that actually reasons.
     const OBLIGATION_STATE_BUDGET: u128 = 2_000_000;
+    // This engine enumerates ONE value per variable, so array state (N values
+    // per variable) is not something it models. Array obligations are decided
+    // symbolically instead — claiming a verdict from a model that does not fit
+    // the data is exactly the kind of false proof this project refuses to emit.
+    let has_array_state = vars.iter().any(|b| matches!(b.ty, Type::Array { .. }));
     let domains: Vec<IntRange> = vars
         .iter()
         .map(|b| b.ty.as_int_range().unwrap_or(IntRange::new(0, 1)))
         .collect();
     let space: u128 = domains.iter().map(|r| r.size()).product();
     let bdd_will_try = opts.engine == "auto" || opts.engine == "bdd";
-    let exhaustive_worth_it = space <= OBLIGATION_STATE_BUDGET || !bdd_will_try;
+    let exhaustive_worth_it = !has_array_state
+        && (space <= OBLIGATION_STATE_BUDGET || !bdd_will_try);
+    if has_array_state && bdd_will_try {
+        notes.push(
+            "obligation involves array state; decided symbolically (an array is N integer \
+             variables with ITE-chain access)"
+                .into(),
+        );
+    }
     if exhaustive_worth_it {
         let synthetic = synthetic_spec(vars, assumptions, goal);
         let mut cur: Vec<i64> = domains.iter().map(|r| r.lo).collect();
@@ -904,7 +921,7 @@ pub fn check_validity(
     } else {
         // Deliberately not attempted: the symbolic engine is the right tool
         // for a large obligation state space. Not a failure, so no engine
-        // entry — just a note for the report.
+        // entry â€” just a note for the report.
         notes.push(format!(
             "obligation state space is {} states; checked symbolically rather than by enumeration",
             space
@@ -944,7 +961,7 @@ pub fn check_validity(
         (Some(a), Some(b)) if a == b => a,
         (Some(a), Some(b)) => {
             notes.push(format!(
-                "ENGINES DISAGREE on obligation (exhaustive={:?}, bdd={:?}) — refusing to certify",
+                "ENGINES DISAGREE on obligation (exhaustive={:?}, bdd={:?}) â€” refusing to certify",
                 a, b
             ));
             Verdict::GaveUp {
@@ -953,9 +970,25 @@ pub fn check_validity(
         }
         (Some(a), None) => a,
         (None, Some(b)) => b,
-        (None, None) => Verdict::GaveUp {
-            reason: "no engine could check the obligation".into(),
-        },
+        (None, None) => {
+            // Surface whatever the engines actually said, so a declined
+            // obligation is diagnosable rather than mysterious.
+            let mut why: Vec<String> = engines
+                .iter()
+                .filter_map(|e| match &e.verdict {
+                    Verdict::GaveUp { reason } => Some(reason.clone()),
+                    _ => None,
+                })
+                .collect();
+            why.extend(notes.iter().cloned());
+            Verdict::GaveUp {
+                reason: if why.is_empty() {
+                    "no engine could check the obligation".into()
+                } else {
+                    why.join("; ")
+                },
+            }
+        }
     };
 
     ValidityResult {
@@ -987,53 +1020,80 @@ fn bdd_check_validity(
     goal: &Expr,
     budget: usize,
 ) -> Result<(Verdict, u128, Option<Counterexample>), String> {
-    // Every variable must be a plain integer domain for the bitblaster.
-    for v in vars {
-        match v.ty {
-            Type::Int(_) | Type::Decimal { .. } | Type::Bool => {}
-            Type::Array { .. } => {
-                return Err("obligation mentions array state (exhaustive engine only)".into())
-            }
-        }
-        // Arrays and quantifiers inside the predicates also decline.
-        for e in assumptions.iter().chain(std::iter::once(goal)) {
-            if bitblast::contains_division(e) {
-                return Err("obligation uses a fragment the bitblaster declines".into());
-            }
+    // Division is the one fragment the bitblaster declines.
+    for e in assumptions.iter().chain(std::iter::once(goal)) {
+        if bitblast::contains_division(e) {
+            return Err("obligation uses division (no circuit implemented)".into());
         }
     }
 
-    let synthetic = synthetic_spec(vars, assumptions, goal);
     let mut bdd = Bdd::new(budget);
-    let (bad, vars_used, named) = {
+
+    // Layout: one slot per scalar, one per array element. An array is exactly
+    // N integer variables, so this needs no new theory.
+    let layout: Vec<(String, IntRange, usize)> = vars
+        .iter()
+        .map(|b| match b.ty {
+            Type::Array { index, elem } => (b.name.clone(), elem, index.size() as usize),
+            Type::Int(r) => (b.name.clone(), r, 1),
+            Type::Decimal { stored, .. } => (b.name.clone(), stored, 1),
+            Type::Bool => (b.name.clone(), IntRange::new(0, 1), 1),
+        })
+        .collect();
+
+    let (bad, nodes, named) = {
         let mut bb = BitBlaster::new(&mut bdd);
-        let mut env = std::collections::HashMap::new();
-        let ranges: Vec<IntRange> = vars
-            .iter()
-            .map(|b| b.ty.as_int_range().unwrap_or(IntRange::new(0, 1)))
-            .collect();
-        let vals = bb
-            .param_bits_interleaved(&ranges)
+        let (scalars, arrays) = bb
+            .alloc_params(&layout)
             .map_err(|e: BlastError| e.to_string())?;
+
+        // Every leaf needs its range constrained, arrays included.
+        let mut domain_parts: Vec<(String, _IVal, IntRange)> = Vec::new();
         let mut named: Vec<(String, _IVal)> = Vec::new();
-        for (b, v) in vars.iter().zip(vals) {
-            env.insert(b.name.clone(), ival_clone(&v));
-            named.push((b.name.clone(), v));
+        for (name, range, count) in &layout {
+            if *count == 1 {
+                if let Some(v) = scalars.get(name) {
+                    domain_parts.push((name.clone(), v.clone(), *range));
+                    named.push((name.clone(), v.clone()));
+                }
+            } else if let Some(elems) = arrays.get(name) {
+                for (k, e) in elems.iter().enumerate() {
+                    domain_parts.push((format!("{}[{}]", name, k), e.clone(), *range));
+                    named.push((format!("{}[{}]", name, k), e.clone()));
+                }
+            }
         }
+
+        bb.arrays = arrays;
         let bad = bb
-            .bad_state_predicate(&synthetic, &env, &named, assumptions, std::slice::from_ref(goal))
+            .bad_state_predicate(&domain_parts, &scalars, assumptions, std::slice::from_ref(goal))
             .map_err(|e: BlastError| e.to_string())?;
-        (bad, bb.vars_used(), named)
+        let nodes = bb.bdd.node_count() as u128;
+        (bad, nodes, named)
     };
-    let nodes = bdd.node_count() as u128;
 
     if !bdd.sat(bad) {
-        let _ = vars_used;
         return Ok((Verdict::Proved, nodes, None));
     }
 
+    // A real counterexample: decode the satisfying assignment into leaf
+    // values (scalars and array elements alike).
     let assign = bdd_one_sat(&bdd, bad);
+    let synthetic = synthetic_spec(vars, assumptions, goal);
     let decoded = decode_params(&synthetic, &named, &assign, &bdd);
+
+    // CONFIRM the counterexample with the reference evaluator before
+    // reporting it. The contract path has always done this; obligations must
+    // too, or a symbolic-encoding bug becomes a bogus accusation against the
+    // user's program. If the evaluator says the obligation actually HOLDS
+    // here, the two disagree and we refuse to certify rather than guess.
+    if obligation_holds_at(&synthetic, vars, assumptions, goal, &decoded) {
+        return Err(format!(
+            "internal: symbolic engine reported a violation at {:?} that the evaluator \
+             accepts — refusing to certify",
+            decoded
+        ));
+    }
     Ok((
         Verdict::Violated,
         nodes,
@@ -1042,6 +1102,51 @@ fn bdd_check_validity(
             violation: format!("obligation fails: {}", goal),
         }),
     ))
+}
+
+/// Evaluate `assumptions ⇒ goal` at decoded leaf values, with the reference
+/// evaluator. Array elements arrive as `name[k]` entries.
+fn obligation_holds_at(
+    synthetic: &Spec,
+    vars: &[Binding],
+    assumptions: &[Expr],
+    goal: &Expr,
+    decoded: &[(String, i64)],
+) -> bool {
+    let mut env = eval::Env::default();
+    let mut scalar_inputs: Vec<i64> = Vec::new();
+    for b in vars {
+        if matches!(b.ty, Type::Array { .. }) {
+            // Gather the elements that were decoded for this array.
+            let mut elems: Vec<(usize, i64)> = decoded
+                .iter()
+                .filter_map(|(n, v)| {
+                    let prefix = format!("{}[", b.name);
+                    let idx = n.strip_prefix(&prefix)?.strip_suffix(']')?;
+                    Some((idx.parse::<usize>().ok()?, *v))
+                })
+                .collect();
+            elems.sort_by_key(|(i, _)| *i);
+            let contents: Vec<i64> = elems.into_iter().map(|(_, v)| v).collect();
+            env.arrays.insert(b.name.clone(), contents);
+        } else {
+            let v = decoded
+                .iter()
+                .find(|(n, _)| n == &b.name)
+                .map(|(_, v)| *v)
+                .unwrap_or(0);
+            env.params.push((b.name.clone(), eval::Value::Int(v)));
+            scalar_inputs.push(v);
+        }
+    }
+    let _ = synthetic;
+    let _ = scalar_inputs;
+    for a in assumptions {
+        if !matches!(eval::eval(a, &env), Ok(eval::Value::Bool(true))) {
+            return true; // assumptions false here: obligation is vacuous
+        }
+    }
+    matches!(eval::eval(goal, &env), Ok(eval::Value::Bool(true)))
 }
 
 
@@ -1074,7 +1179,7 @@ fn run_statistical(
                 Verdict::Violated,
                 None,
                 vec![format!(
-                    "counterexample found in sample #{}: {:?} → {}",
+                    "counterexample found in sample #{}: {:?} â†’ {}",
                     tested,
                     inputs,
                     v
@@ -1086,7 +1191,7 @@ fn run_statistical(
     if tested == 0 {
         return (
             Verdict::GaveUp {
-                reason: "no sampled input satisfied `requires` — precondition may be unsatisfiable"
+                reason: "no sampled input satisfied `requires` â€” precondition may be unsatisfiable"
                     .into(),
             },
             None,
@@ -1094,7 +1199,7 @@ fn run_statistical(
         );
     }
 
-    // Clopper–Pearson: with 0 failures in n trials, the one-sided upper
+    // Clopperâ€“Pearson: with 0 failures in n trials, the one-sided upper
     // bound on the failure rate at confidence c is 1 - (1-c)^(1/n).
     let conf = opts.confidence;
     let upper = 1.0 - (1.0 - conf).powf(1.0 / tested as f64);
@@ -1112,7 +1217,7 @@ fn run_statistical(
     )
 }
 
-/// Deterministic, seedable PRNG (SplitMix64) — sampling must be reproducible
+/// Deterministic, seedable PRNG (SplitMix64) â€” sampling must be reproducible
 /// for certificates to be reproducible.
 pub struct SplitMix64 {
     state: u64,
@@ -1152,7 +1257,7 @@ pub struct Certificate {
 }
 
 impl Certificate {
-    /// Canonical text form — the thing we hash. Deterministic ordering,
+    /// Canonical text form â€” the thing we hash. Deterministic ordering,
     /// no timestamps (a certificate is a mathematical object, not a log).
     pub fn canonical(&self) -> String {
         let mut s = String::new();
@@ -1306,7 +1411,7 @@ impl Certificate {
         let expect = sha256_hex(body.as_bytes());
         if expect != c.cert_sha256 {
             return Err(format!(
-                "certificate digest mismatch: file says {}, recomputed {} — file corrupted or tampered",
+                "certificate digest mismatch: file says {}, recomputed {} â€” file corrupted or tampered",
                 c.cert_sha256, expect
             ));
         }
@@ -1362,7 +1467,7 @@ mod tests {
             exhaustive_budget: 200_000, // smaller slice of 256^3 for test speed
             ..Default::default()
         };
-        // Domain is 256^3 ≈ 16.7M — too big for the test budget, so the
+        // Domain is 256^3 â‰ˆ 16.7M â€” too big for the test budget, so the
         // engine should DECLINE, not falsely prove.
         let r = prove(&spec, &body, &opts);
         assert!(
@@ -1446,7 +1551,7 @@ mod tests {
         crate::sema::analyze(&s).unwrap();
         let body = s.body.clone().unwrap();
         let r = prove(&s, &body, &ProverOptions::default());
-        // Division ⇒ BDD declines; exhaustive proves. Must still be Proved.
+        // Division â‡’ BDD declines; exhaustive proves. Must still be Proved.
         assert_eq!(r.verdict, Verdict::Proved, "engines: {:?}", r.engines);
         let bdd = r.engines.iter().find(|e| e.engine == "bdd-symbolic").unwrap();
         assert!(

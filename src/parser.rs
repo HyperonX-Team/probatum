@@ -229,12 +229,73 @@ impl Parser {
                 }
                 Ok(Type::Int(IntRange::new(lo, hi)))
             }
+            // `array[4] of int[0..9]` — the index domain is 0..3.
+            Tok::ArrayKw => {
+                self.advance();
+                self.expect(&Tok::LBracket, "`[`")?;
+                let n = self.parse_signed_int()?;
+                self.expect(&Tok::RBracket, "`]`")?;
+                if n <= 0 {
+                    return Err(ParseError {
+                        message: format!("array length must be positive, got {}", n),
+                        span: self.span(),
+                    });
+                }
+                self.expect(&Tok::Of, "`of`")?;
+                let elem = self.parse_type()?;
+                let elem_range = match elem {
+                    Type::Int(r) => r,
+                    Type::Decimal { stored, .. } => stored,
+                    other => {
+                        return Err(ParseError {
+                            message: format!("array elements must be int, got `{}`", other),
+                            span: self.span(),
+                        })
+                    }
+                };
+                Ok(Type::Array {
+                    index: IntRange::new(0, n - 1),
+                    elem: elem_range,
+                })
+            }
+            // `dec<2>[0..10000]` — value = stored / 10^2, so 0.00 .. 100.00.
+            Tok::Dec => {
+                self.advance();
+                self.expect(&Tok::Lt, "`<`")?;
+                let scale = self.parse_signed_int()?;
+                self.expect(&Tok::Gt, "`>`")?;
+                if !(0..=9).contains(&scale) {
+                    return Err(ParseError {
+                        message: format!("decimal scale must be 0..9, got {}", scale),
+                        span: self.span(),
+                    });
+                }
+                self.expect(&Tok::LBracket, "`[`")?;
+                let lo = self.parse_signed_int()?;
+                self.expect(&Tok::DotDot, "`..`")?;
+                let hi = self.parse_signed_int()?;
+                self.expect(&Tok::RBracket, "`]`")?;
+                if lo > hi {
+                    return Err(ParseError {
+                        message: format!("empty decimal range dec<{}>[{}..{}]", scale, lo, hi),
+                        span: self.span(),
+                    });
+                }
+                Ok(Type::Decimal {
+                    scale: scale as u32,
+                    stored: IntRange::new(lo, hi),
+                })
+            }
             Tok::Bool => {
                 self.advance();
                 Ok(Type::Bool)
             }
             other => Err(ParseError {
-                message: format!("expected a type (`int[..]` or `bool`) but found `{}`", other),
+                message: format!(
+                    "expected a type (`int[..]`, `array[N] of T`, `dec<S>[..]`, or `bool`) \
+                     but found `{}`",
+                    other
+                ),
                 span: self.span(),
             }),
         }

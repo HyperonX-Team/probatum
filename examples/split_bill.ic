@@ -1,0 +1,23 @@
+// Money, exactly.
+//
+// `dec<2>` is a fixed-point decimal: the true value is `stored / 10^2`, so
+// `dec<2>[0..10000]` means 0.00 .. 100.00 — cents. Unlike binary floating
+// point this is EXACT: every value is a rational with denominator 100, so
+// arithmetic is precise and the prover reasons about it with no IEEE-754
+// model at all.
+//
+// Note what the type system refuses: you cannot compare money to a bare
+// integer (`each >= 5` is a unit error — five what?), and you cannot multiply
+// two decimals (that would square the scale). Unit bugs are type errors here.
+spec split_bill(total: dec<2>[0..100000], people: int[1..100])
+  returns (each: dec<2>[0..100000], rest: dec<2>[0..100000])
+  requires people >= 1
+  ensures  rest == total - each * people
+  ensures  rest >= 0
+  ensures  rest <= total
+{
+  // Integer division on the stored (cent) values truncates toward zero, which
+  // is exactly "round down to the cent" — no floating-point surprise.
+  each := total / people;
+  rest := total - each * people;
+}

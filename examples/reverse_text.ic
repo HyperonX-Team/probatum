@@ -1,0 +1,18 @@
+// Text, verified.
+//
+// A string here is an array of character codes — `int[65..90]` is A..Z. That
+// is not a trick: it is exactly what a string is, and it means every string
+// property is an array property, checked by the same machinery.
+//
+// The contract is a `forall` over the index domain, so it says something
+// about ALL positions at once rather than about the four we happened to test.
+spec reverse_text(s: array[4] of int[65..90])
+  returns (r: array[4] of int[65..90])
+  ensures  forall i in 0..3: r[i] == s[3 - i]
+  ensures  forall i in 0..3: r[i] >= 65 && r[i] <= 90
+{
+  r[0] := s[3];
+  r[1] := s[2];
+  r[2] := s[1];
+  r[3] := s[0];
+}

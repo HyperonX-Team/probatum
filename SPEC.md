@@ -77,6 +77,61 @@ assigned is a semantic error.
 |---|---|
 | `int[lo..hi]` | Integer, every value in the closed range. `lo` and `hi` are literals (negatives allowed). |
 | `bool` | Boolean. Supported in expressions; parameters/results of this type are **not yet supported by the proof engines** (see ROADMAP). |
+| `array[N] of int[lo..hi]` | Fixed-size array / list. Indices are `0..N-1`; an out-of-range index is a **fault** (a proof obligation, not a silent default). `len(a)` is `N`. Strings are arrays of character codes: `array[4] of int[65..90]` is four letters. |
+| `dec<S>[lo..hi]` | Exact fixed-point decimal: the value is `stored / 10^S`. `dec<2>[0..10000]` is 0.00 … 100.00 — cents. Arithmetic is exact; there is no IEEE-754 model anywhere in the prover. |
+
+---
+
+## Statements
+
+```
+x := e;                 // assignment
+a[i] := e;              // indexed write (i may be symbolic)
+assert E;               // inline proof obligation
+if C { … } else { … }   // branch
+while C invariant I …   // loop — the invariant IS the intent
+  decreases V
+{ … }
+```
+
+A `while` loop **requires at least one `invariant`** — without one the loop
+could only be run, never proved, and `ic` says so instead of pretending.
+
+`locals ( i: int[0..100], acc: int[0..5050] )` declares the loop's working
+variables. Statically typed, so every variable's domain is known; internally
+verified, never exposed to callers.
+
+### How loops are proved
+
+Three obligations per loop, plus a fourth for termination:
+
+| Obligation | Meaning |
+|---|---|
+| entry | the invariant holds before the loop |
+| preservation | `I ∧ guard ⇒ wp(body, I)` — every iteration keeps it |
+| exit | `I ∧ ¬guard ⇒ postcondition` |
+| termination | with `decreases V`: `V > 0` and `V` strictly decreases |
+
+Preservation + exit give **partial correctness**. Adding `decreases` gives
+**total correctness**. Without it `ic` reports partial correctness explicitly
+rather than quietly proving the weaker thing.
+
+### Quantifiers and folds
+
+```
+forall i in 0..n: E      // true for every i
+exists i in 0..n: E      // true for some i
+sum(k in 0..i-1: a[k])   // fold — the workhorse of array intent
+```
+
+Bounds may be **symbolic**: `sum(k in 0..i-1: a[k])` inside a loop invariant
+is exactly what makes array loops provable. The symbolic engine unrolls the
+quantifier over the widest range its bound can take and guards each term, so
+the unrolling is exact rather than approximate.
+
+---
+
+## Types (detailed)
 
 Static analysis computes the **exact interval** of every expression from the
 declared domains and uses it to size proof circuits and reject impossible

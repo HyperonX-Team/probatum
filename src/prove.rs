@@ -3,21 +3,21 @@
 //!
 //! ## Engine ladder
 //!
-//! 1. **Exhaustive** â€” walks every input in the domain. Complete (not
+//! 1. **Exhaustive** — walks every input in the domain. Complete (not
 //!    statistical) whenever it finishes. Shares only `eval.rs` with the
-//!    spec â€” it is the *definition* of correctness by construction.
-//! 2. **BDD (symbolic)** â€” bit-blasts the contract into a boolean function
+//!    spec — it is the *definition* of correctness by construction.
+//! 2. **BDD (symbolic)** — bit-blasts the contract into a boolean function
 //!    and asks whether the "bad state" is satisfiable over the *entire*
 //!    domain at once. Also complete. Shares no code with (1).
-//! 3. **Statistical** â€” for domains too large to enumerate or blast: random
-//!    sampling with a Clopperâ€“Pearson upper bound. Never claims "proved";
+//! 3. **Statistical** — for domains too large to enumerate or blast: random
+//!    sampling with a Clopper–Pearson upper bound. Never claims "proved";
 //!    it reports "no violation found in N samples; violation rate < X with
 //!    confidence 95%". Honest limits, honestly labeled.
 //!
 //! ## Cross-validation
 //!
 //! When both complete engines run, they must agree on the verdict. A
-//! disagreement is an *internal error* â€” we refuse to issue a certificate
+//! disagreement is an *internal error* — we refuse to issue a certificate
 //! rather than pick a winner. Two independent implementations agreeing is
 //! the strongest evidence a small tool like this can produce.
 //!
@@ -25,7 +25,7 @@
 //!
 //! A precondition that is unsatisfiable makes every contract trivially true
 //! ("proved" nothing). The prover checks that at least one input reaches
-//! the body â€” and reports the witness â€” before claiming success.
+//! the body — and reports the witness — before claiming success.
 
 use crate::ast;
 use crate::ast::*;
@@ -35,7 +35,7 @@ use crate::eval;
 use crate::sha256::sha256_hex;
 
 /// Name a flat input vector for human consumption: scalar parameters by
-/// name, array parameters element by element (`a[0]`, `a[1]`, â€¦).
+/// name, array parameters element by element (`a[0]`, `a[1]`, …).
 pub fn describe_inputs(spec: &Spec, inputs: &[i64]) -> Vec<(String, i64)> {
     let mut out = Vec::new();
     let mut k = 0usize;
@@ -123,7 +123,7 @@ pub struct ProverOptions {
 impl Default for ProverOptions {
     fn default() -> Self {
         ProverOptions {
-            exhaustive_budget: 100_000_000, // 10^8 inputs â‰ˆ seconds in release
+            exhaustive_budget: 100_000_000, // 10^8 inputs ≈ seconds in release
             bdd_budget: 5_000_000,
             samples: 100_000,
             confidence: 0.95,
@@ -136,9 +136,9 @@ impl Default for ProverOptions {
 ///
 /// Two paths, chosen by what the program actually is:
 ///
-/// * **Straight-line scalar code** â€” the original path: evaluate the body on
+/// * **Straight-line scalar code** — the original path: evaluate the body on
 ///   every input (exhaustive) and bit-blast the contract (BDD).
-/// * **Control flow or arrays** â€” the Hoare path: execute the program over
+/// * **Control flow or arrays** — the Hoare path: execute the program over
 ///   the domain *and* discharge the generated verification conditions
 ///   symbolically. Two independent methods again, for a different reason:
 ///   execution shows the loop behaves; the invariant proof shows it must.
@@ -305,7 +305,7 @@ fn prove_with_hoare(
     let verdict = if pre_witness.is_none() {
         Verdict::GaveUp {
             reason: format!(
-                "precondition is UNSATISFIABLE (vacuous) â€” {}",
+                "precondition is UNSATISFIABLE (vacuous) — {}",
                 vacuity_notes.join("; ")
             ),
         }
@@ -348,7 +348,7 @@ fn prove_straight(
     let (pre_witness, vacuity_notes) = check_vacuity(spec, body, opts, domain);
 
     if let Some(w) = &pre_witness {
-        let _ = w; // reachable â€” good
+        let _ = w; // reachable — good
     }
 
     let mut engines: Vec<EngineReport> = Vec::new();
@@ -446,7 +446,7 @@ fn prove_straight(
                 engine: "cross-validation".into(),
                 verdict: Verdict::GaveUp {
                     reason: format!(
-                        "ENGINES DISAGREE (exhaustive={:?}, bdd={:?}) â€” refusing to certify",
+                        "ENGINES DISAGREE (exhaustive={:?}, bdd={:?}) — refusing to certify",
                         a, b
                     ),
                 },
@@ -472,11 +472,11 @@ fn prove_straight(
         }
     };
 
-    // Vacuous precondition â‡’ "Proved" is meaningless; downgrade honestly.
+    // Vacuous precondition ⇒ "Proved" is meaningless; downgrade honestly.
     let verdict = if pre_witness.is_none() {
         Verdict::GaveUp {
             reason: format!(
-                "precondition is UNSATISFIABLE (vacuous) â€” {}",
+                "precondition is UNSATISFIABLE (vacuous) — {}",
                 vacuity_notes.join("; ")
             ),
         }
@@ -548,7 +548,7 @@ fn check_vacuity(
                 vec!["no input satisfies `requires` (via BDD)".into()],
             ),
             Err(e) => (
-                // Can't decide: assume reachable rather than refuse â€” the
+                // Can't decide: assume reachable rather than refuse — the
                 // vacuity check is a guard, not the proof itself.
                 Some(Vec::new()),
                 vec![format!("vacuity not decided: {}", e)],
@@ -674,7 +674,7 @@ fn run_exhaustive(
     let domain = spec.input_domain_size();
     if domain > budget {
         return Err(format!(
-            "domain of {} inputs exceeds budget of {} â€” declining (BDD or sampling next)",
+            "domain of {} inputs exceeds budget of {} — declining (BDD or sampling next)",
             domain, budget
         ));
     }
@@ -740,7 +740,7 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
     let (bad, vars_used, named) = {
         let mut bb = BitBlaster::new(&mut bdd);
         let mut env = std::collections::HashMap::new();
-        // Interleaved variable ordering â€” see bitblast::param_bits_interleaved.
+        // Interleaved variable ordering — see bitblast::param_bits_interleaved.
         let ranges: Vec<IntRange> = crate::ast::input_domains(spec);
         let vals = bb
             .param_bits_interleaved(&ranges)
@@ -775,7 +775,7 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
     }
 
     // Extract a concrete counterexample and CONFIRM it with the reference
-    // evaluator â€” a BDD bug must not produce a bogus certificate.
+    // evaluator — a BDD bug must not produce a bogus certificate.
     let assign = bdd_one_sat(&bdd, bad);
     let decoded = decode_params(spec, &named, &assign, &bdd);
     // How much of the domain is bad? (Level-aware counting; may saturate.)
@@ -807,15 +807,15 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
                 "counterexample extracted from BDD and independently confirmed by the evaluator"
                     .into(),
                 format!(
-                    "â‰ˆ{} of the encoded input assignments violate the contract",
+                    "≈{} of the encoded input assignments violate the contract",
                     violating
                 ),
             ],
         }),
         Ok(_) => {
-            // BDD claims violation, evaluator disagrees â†’ internal error.
+            // BDD claims violation, evaluator disagrees → internal error.
             Err(format!(
-                "internal: BDD found a 'counterexample' {:?} that the evaluator accepts â€” refusing to certify",
+                "internal: BDD found a 'counterexample' {:?} that the evaluator accepts — refusing to certify",
                 inputs
             ))
         }
@@ -834,7 +834,7 @@ pub struct ValidityResult {
     pub notes: Vec<String>,
 }
 
-/// Check `assumptions â‡’ goal` for **every** value of `vars` in their declared
+/// Check `assumptions ⇒ goal` for **every** value of `vars` in their declared
 /// domains. This is the shape every Hoare obligation has, and it is exactly
 /// what the existing engines already decide.
 pub fn check_validity(
@@ -857,7 +857,7 @@ pub fn check_validity(
     const OBLIGATION_STATE_BUDGET: u128 = 2_000_000;
     // This engine enumerates ONE value per variable, so array state (N values
     // per variable) is not something it models. Array obligations are decided
-    // symbolically instead — claiming a verdict from a model that does not fit
+    // symbolically instead � claiming a verdict from a model that does not fit
     // the data is exactly the kind of false proof this project refuses to emit.
     let has_array_state = vars.iter().any(|b| matches!(b.ty, Type::Array { .. }));
     let domains: Vec<IntRange> = vars
@@ -921,7 +921,7 @@ pub fn check_validity(
     } else {
         // Deliberately not attempted: the symbolic engine is the right tool
         // for a large obligation state space. Not a failure, so no engine
-        // entry â€” just a note for the report.
+        // entry — just a note for the report.
         notes.push(format!(
             "obligation state space is {} states; checked symbolically rather than by enumeration",
             space
@@ -961,7 +961,7 @@ pub fn check_validity(
         (Some(a), Some(b)) if a == b => a,
         (Some(a), Some(b)) => {
             notes.push(format!(
-                "ENGINES DISAGREE on obligation (exhaustive={:?}, bdd={:?}) â€” refusing to certify",
+                "ENGINES DISAGREE on obligation (exhaustive={:?}, bdd={:?}) — refusing to certify",
                 a, b
             ));
             Verdict::GaveUp {
@@ -1090,7 +1090,7 @@ fn bdd_check_validity(
     if obligation_holds_at(&synthetic, vars, assumptions, goal, &decoded) {
         return Err(format!(
             "internal: symbolic engine reported a violation at {:?} that the evaluator \
-             accepts — refusing to certify",
+             accepts � refusing to certify",
             decoded
         ));
     }
@@ -1104,7 +1104,7 @@ fn bdd_check_validity(
     ))
 }
 
-/// Evaluate `assumptions ⇒ goal` at decoded leaf values, with the reference
+/// Evaluate `assumptions ? goal` at decoded leaf values, with the reference
 /// evaluator. Array elements arrive as `name[k]` entries.
 fn obligation_holds_at(
     synthetic: &Spec,
@@ -1179,7 +1179,7 @@ fn run_statistical(
                 Verdict::Violated,
                 None,
                 vec![format!(
-                    "counterexample found in sample #{}: {:?} â†’ {}",
+                    "counterexample found in sample #{}: {:?} → {}",
                     tested,
                     inputs,
                     v
@@ -1191,7 +1191,7 @@ fn run_statistical(
     if tested == 0 {
         return (
             Verdict::GaveUp {
-                reason: "no sampled input satisfied `requires` â€” precondition may be unsatisfiable"
+                reason: "no sampled input satisfied `requires` — precondition may be unsatisfiable"
                     .into(),
             },
             None,
@@ -1199,7 +1199,7 @@ fn run_statistical(
         );
     }
 
-    // Clopperâ€“Pearson: with 0 failures in n trials, the one-sided upper
+    // Clopper–Pearson: with 0 failures in n trials, the one-sided upper
     // bound on the failure rate at confidence c is 1 - (1-c)^(1/n).
     let conf = opts.confidence;
     let upper = 1.0 - (1.0 - conf).powf(1.0 / tested as f64);
@@ -1217,7 +1217,7 @@ fn run_statistical(
     )
 }
 
-/// Deterministic, seedable PRNG (SplitMix64) â€” sampling must be reproducible
+/// Deterministic, seedable PRNG (SplitMix64) — sampling must be reproducible
 /// for certificates to be reproducible.
 pub struct SplitMix64 {
     state: u64,
@@ -1257,7 +1257,7 @@ pub struct Certificate {
 }
 
 impl Certificate {
-    /// Canonical text form â€” the thing we hash. Deterministic ordering,
+    /// Canonical text form — the thing we hash. Deterministic ordering,
     /// no timestamps (a certificate is a mathematical object, not a log).
     pub fn canonical(&self) -> String {
         let mut s = String::new();
@@ -1411,7 +1411,7 @@ impl Certificate {
         let expect = sha256_hex(body.as_bytes());
         if expect != c.cert_sha256 {
             return Err(format!(
-                "certificate digest mismatch: file says {}, recomputed {} â€” file corrupted or tampered",
+                "certificate digest mismatch: file says {}, recomputed {} — file corrupted or tampered",
                 c.cert_sha256, expect
             ));
         }
@@ -1467,7 +1467,7 @@ mod tests {
             exhaustive_budget: 200_000, // smaller slice of 256^3 for test speed
             ..Default::default()
         };
-        // Domain is 256^3 â‰ˆ 16.7M â€” too big for the test budget, so the
+        // Domain is 256^3 ≈ 16.7M — too big for the test budget, so the
         // engine should DECLINE, not falsely prove.
         let r = prove(&spec, &body, &opts);
         assert!(
@@ -1538,7 +1538,11 @@ mod tests {
     }
 
     #[test]
-    fn cross_validates_on_small_domain() {
+    fn cross_validates_division() {
+        // Division used to be the one fragment the symbolic engine declined.
+        // With restoring-division circuits it now PROVES � so this test flipped
+        // from "the BDD must decline honestly" to "both engines must agree",
+        // which is a strictly stronger claim about the same program.
         let s = parse(
             r#"
             spec half(a: int[0..63]) returns (r: int[0..63])
@@ -1551,13 +1555,15 @@ mod tests {
         crate::sema::analyze(&s).unwrap();
         let body = s.body.clone().unwrap();
         let r = prove(&s, &body, &ProverOptions::default());
-        // Division â‡’ BDD declines; exhaustive proves. Must still be Proved.
         assert_eq!(r.verdict, Verdict::Proved, "engines: {:?}", r.engines);
         let bdd = r.engines.iter().find(|e| e.engine == "bdd-symbolic").unwrap();
-        assert!(
-            matches!(bdd.verdict, Verdict::GaveUp { .. }),
-            "BDD should decline division, not guess"
+        assert_eq!(
+            bdd.verdict,
+            Verdict::Proved,
+            "the symbolic engine must now decide division: {:?}",
+            bdd
         );
+        assert!(r.cross_validated, "both engines must agree on division");
     }
 
     #[test]

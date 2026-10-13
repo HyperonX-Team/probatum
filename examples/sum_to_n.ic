@@ -8,7 +8,7 @@
 // `ic` checks all three, plus termination (the `decreases` clause), and
 // cross-checks the result by *executing* the loop on every input in the
 // domain. Two independent methods: one executes, one reasons.
-spec sum_to(n: int[0..100])
+spec sum_to_n(n: int[0..100])
   returns (s: int[0..5050])
   locals (i: int[0..101], acc: int[0..5050])
   requires n >= 0

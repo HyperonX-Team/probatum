@@ -3,7 +3,7 @@
 //! While the exhaustive engine speaks i64 and walks the input domain one
 //! vector at a time, this module speaks *boolean circuits* and reasons about
 //! all inputs at once. The two engines share only `eval.rs` as their
-//! specification â€” they share no code â€” so agreement between them is
+//! specification — they share no code — so agreement between them is
 //! genuine cross-validation, not a tautology.
 //!
 //! ## Semantics mirrored from `eval.rs`
@@ -11,22 +11,22 @@
 //! Every compiled node carries a `fault` signal alongside its value bits:
 //!
 //! * `fault(x)` = "evaluating x diverges from the evaluator's happy path"
-//!   (division by zero â€” the only fault representable in this subset).
+//!   (division by zero — the only fault representable in this subset).
 //! * `ite` is lazy: the untaken branch's fault must not leak
-//!   (`fault = fc âˆ¨ (c âˆ§ ft) âˆ¨ (Â¬c âˆ§ fe)`), mirroring the evaluator.
-//! * `&&`/`||` short-circuit: `fault(a âˆ§ b) = fault(a) âˆ¨ (val(a) âˆ§ fault(b))`.
+//!   (`fault = fc ∨ (c ∧ ft) ∨ (¬c ∧ fe)`), mirroring the evaluator.
+//! * `&&`/`||` short-circuit: `fault(a ∧ b) = fault(a) ∨ (val(a) ∧ fault(b))`.
 //!
 //! Bad state (what we prove *unsatisfiable*):
 //!
 //! ```text
-//! bad = domain_ok âˆ§ pre_ok âˆ§ (fault âˆ¨ Â¬ensures âˆ¨ out_of_declared_range)
+//! bad = domain_ok ∧ pre_ok ∧ (fault ∨ ¬ensures ∨ out_of_declared_range)
 //! ```
 //!
 //! ## Supported fragment
 //!
 //! `+ - * / %`, comparisons, boolean logic, `if`, `min`, `max`.
 //! Division/modulo circuits are deliberately deferred (see ROADMAP): when a
-//! spec contains them, the bitblaster **declines** rather than guessing â€”
+//! spec contains them, the bitblaster **declines** rather than guessing —
 //! the prover then falls back to the exhaustive or statistical engine. A
 //! declined engine is never a false proof.
 
@@ -39,7 +39,7 @@ use crate::sema;
 pub struct IVal {
     pub bits: Vec<u32>,
     pub fault: u32,
-    /// Static range of this expression (from type inference) â€” the bits
+    /// Static range of this expression (from type inference) — the bits
     /// encode values within exactly this range.
     pub range: IntRange,
 }
@@ -55,7 +55,7 @@ pub struct BVal {
 pub enum BlastError {
     /// This spec uses an operator the bitblaster does not yet implement.
     Unsupported(&'static str),
-    /// Division by zero *symbolically* reachable â€” handled via fault signal,
+    /// Division by zero *symbolically* reachable — handled via fault signal,
     /// but division itself is Unsupported until circuits land (see above).
     Budget(BddError),
 }
@@ -65,7 +65,7 @@ impl std::fmt::Display for BlastError {
         match self {
             BlastError::Unsupported(op) => write!(
                 f,
-                "bitblaster declines `{}` â€” circuit not implemented; falling back is correct, guessing is not",
+                "bitblaster declines `{}` — circuit not implemented; falling back is correct, guessing is not",
                 op
             ),
             BlastError::Budget(e) => write!(f, "BDD budget: {}", e),
@@ -91,7 +91,7 @@ pub struct BitBlaster<'a> {
     pub bdd: &'a mut Bdd,
     /// Next free BDD variable index.
     next_var: u32,
-    /// Array name â†’ element bit-vectors, in index order.
+    /// Array name → element bit-vectors, in index order.
     ///
     /// Arrays are not a special theory here: they are exactly `N` integer
     /// variables, and `a[i]` with a *symbolic* index compiles to an ITE chain
@@ -120,7 +120,7 @@ impl<'a> BitBlaster<'a> {
     }
 
     /// A constant integer as bits over `range` (const must lie in range).
-    /// Constant bits are terminals â€” they consume no variable indices.
+    /// Constant bits are terminals — they consume no variable indices.
     pub fn int_const(&mut self, v: i64, range: IntRange) -> Result<IVal, BlastError> {
         let w = width_for(range);
         let mut bits = Vec::with_capacity(w);
@@ -172,7 +172,7 @@ impl<'a> BitBlaster<'a> {
         Ok(out)
     }
 
-    /// Allocate all parameters â€” scalars and arrays â€” with interleaved
+    /// Allocate all parameters — scalars and arrays — with interleaved
     /// ordering. An array of `N` elements becomes `N` slots, so arrays are
     /// exactly `N` integer variables: no new theory, no approximation.
     pub fn alloc_params(
@@ -233,7 +233,7 @@ impl<'a> BitBlaster<'a> {
     }
 
     /// Allocate all parameters with **interleaved** variable ordering:
-    /// bit 0 of param 0, bit 0 of param 1, â€¦, bit 1 of param 0, â€¦
+    /// bit 0 of param 0, bit 0 of param 1, …, bit 1 of param 0, …
     ///
     /// This is the Bryant-style ordering that keeps ripple-carry chains
     /// (and comparators) local: for `a - amount` the corresponding bits of
@@ -241,7 +241,7 @@ impl<'a> BitBlaster<'a> {
     /// reuse nodes instead of interleaving across whole 9-bit blocks.
     /// Param-major ordering made `transfer_funds` explode past 5M nodes;
     /// interleaved proves it in a few thousand. (Cross-validation caught
-    /// no *correctness* difference â€” this is purely about size.)
+    /// no *correctness* difference — this is purely about size.)
     pub fn param_bits_interleaved(
         &mut self,
         ranges: &[IntRange],
@@ -271,7 +271,7 @@ impl<'a> BitBlaster<'a> {
 
     /// `domain_ok`: the raw bit pattern lies within the declared range.
     /// (Bit patterns outside [lo, hi] exist whenever the range isn't a full
-    /// two's-complement window â€” e.g. `int[0..255]` in 9 bits admits -1.)
+    /// two's-complement window — e.g. `int[0..255]` in 9 bits admits -1.)
     pub fn in_domain(&mut self, v: &IVal, range: IntRange) -> Result<u32, BlastError> {
         let ge_lo = self.signed_ge(v, range.lo)?;
         let le_hi = self.signed_le(v, range.hi)?;
@@ -300,17 +300,17 @@ impl<'a> BitBlaster<'a> {
     }
 
     /// Ripple-carry add of two equally-wide bitvectors; returns w bits
-    /// (carry dropped â€” caller's static range analysis guarantees the true
+    /// (carry dropped — caller's static range analysis guarantees the true
     /// sum fits, which the `range` field documents).
     fn add_bits(&mut self, a: &[u32], b: &[u32]) -> Result<Vec<u32>, BlastError> {
         debug_assert_eq!(a.len(), b.len());
         let mut carry = FALSE;
         let mut out = Vec::with_capacity(a.len());
         for i in 0..a.len() {
-            // sum = a âŠ• b âŠ• carry
+            // sum = a ⊕ b ⊕ carry
             let axb = self.bdd.xor(a[i], b[i]).map_err(BlastError::Budget)?;
             let sum = self.bdd.xor(axb, carry).map_err(BlastError::Budget)?;
-            // carry' = (a âˆ§ b) âˆ¨ (axb âˆ§ carry)
+            // carry' = (a ∧ b) ∨ (axb ∧ carry)
             let ab = self.bdd.and(a[i], b[i]).map_err(BlastError::Budget)?;
             let abc = self.bdd.and(axb, carry).map_err(BlastError::Budget)?;
             carry = self.bdd.or(ab, abc).map_err(BlastError::Budget)?;
@@ -339,7 +339,7 @@ impl<'a> BitBlaster<'a> {
         // borrow-out of a - b: true iff a < b (unsigned).
         let mut borrow = FALSE;
         for i in 0..a.len() {
-            // borrow' = (~a âˆ§ b) âˆ¨ (~a âˆ§ borrow) âˆ¨ (b âˆ§ borrow)
+            // borrow' = (~a ∧ b) ∨ (~a ∧ borrow) ∨ (b ∧ borrow)
             let na = self.bdd.neg(a[i]).map_err(BlastError::Budget)?;
             let nab = self.bdd.and(na, b[i]).map_err(BlastError::Budget)?;
             let nabr = self.bdd.and(na, borrow).map_err(BlastError::Budget)?;
@@ -362,7 +362,7 @@ impl<'a> BitBlaster<'a> {
     }
 
     fn signed_ge(&mut self, v: &IVal, k: i64) -> Result<u32, BlastError> {
-        // v >= k  âŸº  !(v < k)
+        // v >= k  ⟺  !(v < k)
         let c = self.int_const(k, IntRange::new(k, k))?;
         let w = v.bits.len().max(c.bits.len());
         let a = self.sign_extend(v, w)?;
@@ -397,7 +397,7 @@ impl<'a> BitBlaster<'a> {
         e: &Expr,
         env: &std::collections::HashMap<String, IVal>,
     ) -> Result<IVal, BlastError> {
-        // Type inference must see array variables too — an array is not a
+        // Type inference must see array variables too � an array is not a
         // scalar, so it lives in `self.arrays` rather than in `env`.
         let range = match sema::infer_int_bindings(e, &self.scope_bindings(env)) {
             Ok(r) => r,
@@ -497,7 +497,7 @@ impl<'a> BitBlaster<'a> {
             )),
             // ---- arrays: ITE chains over element variables ------------------
             // `a[i]` with a symbolic `i` is exactly
-            //   ite(i == 0, a0, ite(i == 1, a1, â€¦ , a_{N-1}))
+            //   ite(i == 0, a0, ite(i == 1, a1, … , a_{N-1}))
             // and an out-of-range index is a FAULT (the classic out-of-bounds
             // bug, turned into a proof obligation).
             Expr::ArrayRead(name, idx) => {
@@ -586,6 +586,101 @@ impl<'a> BitBlaster<'a> {
         b
     }
 
+    /// Zero-extend a raw bit vector to `w` bits.
+    fn zero_extend_bits(&mut self, a: &[u32], w: usize) -> Result<Vec<u32>, BlastError> {
+        let mut v = a.to_vec();
+        while v.len() < w {
+            v.push(FALSE);
+        }
+        Ok(v)
+    }
+
+    /// Unsigned restoring division on raw bit vectors.
+    ///
+    /// The classic schoolbook algorithm: shift the dividend in one bit at a
+    /// time, and subtract the divisor whenever the running remainder is at
+    /// least as large. `w` shift-subtract steps, each built from the adders
+    /// and comparators already here � no new algebra, just a finite unrolling
+    /// of a loop the hardware world settled in 1950.
+    ///
+    /// Returns `(quotient, remainder)` at `w` bits. The remainder carries one
+    /// extra bit internally so the shift cannot silently overflow.
+    fn udivmod_bits(
+        &mut self,
+        a: &[u32],
+        b: &[u32],
+        w: usize,
+    ) -> Result<(Vec<u32>, Vec<u32>), BlastError> {
+        let ww = w + 1;
+        let divisor = self.zero_extend_bits(b, ww)?;
+        let neg_divisor = self.neg_bits(&divisor)?;
+        let mut rem = vec![FALSE; ww];
+        let mut quot = vec![FALSE; w];
+
+        for i in (0..w).rev() {
+            // rem = (rem << 1) | a[i]
+            let mut shifted = vec![FALSE; ww];
+            shifted[0] = a[i];
+            for j in 1..ww {
+                shifted[j] = rem[j - 1];
+            }
+            // ge = (shifted >= divisor)  ?  !(shifted < divisor)
+            let lt = self.ult_bits(&shifted, &divisor)?;
+            let ge = self.bdd.neg(lt).map_err(BlastError::Budget)?;
+            let diff = self.add_bits(&shifted, &neg_divisor)?;
+            for j in 0..ww {
+                rem[j] = self.bdd.ite(ge, diff[j], shifted[j]).map_err(BlastError::Budget)?;
+            }
+            quot[i] = ge;
+        }
+        Ok((quot, rem[..w].to_vec()))
+    }
+
+    /// Signed division and remainder, truncating toward zero � the semantics
+    /// Rust and Go implement, so the emitted code matches the proof.
+    ///
+    /// Computed on magnitudes (two's complement has no direct unsigned
+    /// divide), then the signs are re-applied by selection.
+    fn sdivmod(&mut self, av: &IVal, bv: &IVal, range: IntRange) -> Result<(IVal, IVal), BlastError> {
+        let w = width_for(range)
+            .max(av.bits.len())
+            .max(bv.bits.len())
+            + 1;
+        let a = self.sign_extend(av, w)?;
+        let b = self.sign_extend(bv, w)?;
+        let a_neg = a[w - 1];
+        let b_neg = b[w - 1];
+
+        // Magnitudes: |x| = ite(x < 0, -x, x)
+        let na = self.neg_bits(&a)?;
+        let nb = self.neg_bits(&b)?;
+        let mut a_abs = Vec::with_capacity(w);
+        let mut b_abs = Vec::with_capacity(w);
+        for j in 0..w {
+            a_abs.push(self.bdd.ite(a_neg, na[j], a[j]).map_err(BlastError::Budget)?);
+            b_abs.push(self.bdd.ite(b_neg, nb[j], b[j]).map_err(BlastError::Budget)?);
+        }
+
+        let (q_mag, r_mag) = self.udivmod_bits(&a_abs, &b_abs, w)?;
+        let nq = self.neg_bits(&q_mag)?;
+        let nr = self.neg_bits(&r_mag)?;
+        let q_neg = self.bdd.xor(a_neg, b_neg).map_err(BlastError::Budget)?;
+
+        let width = width_for(range);
+        let mut q = Vec::with_capacity(width);
+        let mut r = Vec::with_capacity(width);
+        for j in 0..width {
+            q.push(self.bdd.ite(q_neg, nq[j], q_mag[j]).map_err(BlastError::Budget)?);
+            // Remainder takes the sign of the dividend (truncation).
+            r.push(self.bdd.ite(a_neg, nr[j], r_mag[j]).map_err(BlastError::Budget)?);
+        }
+        let zero_fault = FALSE; // division by zero is handled by the caller
+        Ok((
+            IVal { bits: q, fault: zero_fault, range },
+            IVal { bits: r, fault: zero_fault, range },
+        ))
+    }
+
     /// Bitwise select: `ite(c, a, b)` over two integer values, with **lazy**
     /// fault semantics.
     ///
@@ -593,7 +688,7 @@ impl<'a> BitBlaster<'a> {
     /// quantifier unroller guards iterations past the real bound, and those
     /// iterations may well read out of bounds (they reference `a[k]` for a `k`
     /// the guard excludes). Propagating both branches' faults made the
-    /// symbolic engine accuse a *correct* program — caught by the rule that
+    /// symbolic engine accuse a *correct* program � caught by the rule that
     /// every symbolic counterexample is confirmed by the evaluator before it
     /// is reported.
     fn select(&mut self, c: u32, a: IVal, b: IVal) -> Result<IVal, BlastError> {
@@ -659,7 +754,21 @@ impl<'a> BitBlaster<'a> {
         range: IntRange,
     ) -> Result<IVal, BlastError> {
         match op {
-            BinOp::Div | BinOp::Mod => Err(BlastError::Unsupported("division")),
+            // ---- division and remainder: restoring circuits ----------------
+            // The last fragment the symbolic engine used to decline. Division
+            // by zero, and a fault in either operand, become the node's fault
+            // signal � so the evaluator's semantics are mirrored exactly.
+            BinOp::Div | BinOp::Mod => {
+                let av = self.blast_int(l, env)?;
+                let bv = self.blast_int(r, env)?;
+                let b_zero = self.eq_const(&bv, 0)?;
+                let f = self.bdd.or(av.fault, bv.fault).map_err(BlastError::Budget)?;
+                let fault = self.bdd.or(f, b_zero).map_err(BlastError::Budget)?;
+                let (q, rem) = self.sdivmod(&av, &bv, range)?;
+                let mut val = if op == BinOp::Div { q } else { rem };
+                val.fault = fault;
+                Ok(val)
+            }
             BinOp::Add | BinOp::Sub | BinOp::Mul => {
                 let av = self.blast_int(l, env)?;
                 let bv = self.blast_int(r, env)?;
@@ -696,7 +805,7 @@ impl<'a> BitBlaster<'a> {
                     range,
                 })
             }
-            // Comparisons produce bools â€” never reached from blast_int on a
+            // Comparisons produce bools — never reached from blast_int on a
             // bool-typed node, but the type checker routes them there only
             // when the caller is wrong. Guard anyway.
             _ => Err(BlastError::Unsupported("comparison in int position")),
@@ -807,7 +916,7 @@ impl<'a> BitBlaster<'a> {
             }
             Expr::Param(_) | Expr::Result(_) => {
                 // A bare name in bool position would be a bool-typed variable;
-                // v0.1 int-only params â‡’ unreachable if sema passed.
+                // v0.1 int-only params ⇒ unreachable if sema passed.
                 Err(BlastError::Unsupported("bool variable"))
             }
             // ---- quantifiers: unrolled symbolically -----------------------
@@ -823,7 +932,7 @@ impl<'a> BitBlaster<'a> {
                     let mut inner = env.clone();
                     inner.insert(var.clone(), self.int_const(k, IntRange::new(k, k))?);
                     let b = self.blast_bool(body, &inner)?;
-                    // (k > hi) âˆ¨ body(k)
+                    // (k > hi) ∨ body(k)
                     let past = self.blast_bool(
                         &Expr::Binary(BinOp::Gt, Box::new(Expr::IntLit(k)), hi.clone()),
                         env,
@@ -841,7 +950,7 @@ impl<'a> BitBlaster<'a> {
                     let mut inner = env.clone();
                     inner.insert(var.clone(), self.int_const(k, IntRange::new(k, k))?);
                     let b = self.blast_bool(body, &inner)?;
-                    // (k <= hi) âˆ§ body(k)
+                    // (k <= hi) ∧ body(k)
                     let within = self.blast_bool(
                         &Expr::Binary(BinOp::Le, Box::new(Expr::IntLit(k)), hi.clone()),
                         env,
@@ -868,12 +977,12 @@ impl<'a> BitBlaster<'a> {
     }
 
     /// Bad state for a *predicate* obligation (no body): the assignment
-    /// `domain_ok âˆ§ pre âˆ§ Â¬post` must be unsatisfiable for the obligation to
+    /// `domain_ok ∧ pre ∧ ¬post` must be unsatisfiable for the obligation to
     /// hold. Used by the Hoare path, where obligations are implications over
     /// the program's variables rather than contracts over a body.
     ///
     /// `domain_parts` lists every leaf bit-vector that must be constrained to
-    /// its declared range â€” scalars *and* every array element, since an array
+    /// its declared range — scalars *and* every array element, since an array
     /// element is just another integer variable with a domain.
     pub fn bad_state_predicate(
         &mut self,
@@ -947,18 +1056,18 @@ impl<'a> BitBlaster<'a> {
         let mut post_fault = FALSE;
         for clause in &spec.requires {
             let compiled = self.blast_bool(clause, param_vals)?;
-            // Faulting precondition â‡’ out of domain (matches eval: fault â‡’ false).
+            // Faulting precondition ⇒ out of domain (matches eval: fault ⇒ false).
             let no_fault = self.bdd.neg(compiled.fault).map_err(BlastError::Budget)?;
             let holds = self.bdd.and(no_fault, compiled.val).map_err(BlastError::Budget)?;
             post = self.bdd.and(post, holds).map_err(BlastError::Budget)?;
             post_fault = self.bdd.or(post_fault, compiled.fault).map_err(BlastError::Budget)?;
         }
-        // `post` now holds pre_ok âˆ§ pre_true; pre_fault marks faulting pre.
+        // `post` now holds pre_ok ∧ pre_true; pre_fault marks faulting pre.
         let pre_ok = post;
         let _ = post_fault;
 
         // Result-range checks + ensures, with body substituted in.
-        // Results are matched to their assignment BY NAME â€” the body may
+        // Results are matched to their assignment BY NAME — the body may
         // assign results in any order.
         let mut viol = FALSE;
         for res in &spec.results {
@@ -985,7 +1094,7 @@ impl<'a> BitBlaster<'a> {
             viol = self.bdd.or(viol, compiled.fault).map_err(BlastError::Budget)?;
         }
 
-        // bad = domain âˆ§ pre âˆ§ viol
+        // bad = domain ∧ pre ∧ viol
         let d = self.bdd.and(domain_ok, pre_ok).map_err(BlastError::Budget)?;
         let bad = self.bdd.and(d, viol).map_err(BlastError::Budget)?;
         Ok(bad)
@@ -1012,7 +1121,7 @@ fn env_ranges(
     env.iter().map(|(k, v)| (k.clone(), v.range)).collect()
 }
 
-/// Build the sequential body substitution: result name â†’ param-only expr.
+/// Build the sequential body substitution: result name → param-only expr.
 fn body_subst_map(body: &[Assign]) -> Result<std::collections::HashMap<String, Expr>, BlastError> {
     let mut map = std::collections::HashMap::new();
     for a in body {
@@ -1072,25 +1181,12 @@ fn subst_expr(e: &Expr, map: &std::collections::HashMap<String, Expr>) -> Expr {
 
 /// Does this expression use a fragment the bitblaster declines?
 ///
-/// Division/modulo circuits are not implemented â€” the one remaining gap.
-/// Arrays and quantifiers ARE supported: arrays are `N` integer variables
-/// with ITE-chain access, and quantifiers are unrolled exactly.
-pub fn contains_division(e: &Expr) -> bool {
-    match e {
-        Expr::Binary(BinOp::Div | BinOp::Mod, _, _) => true,
-        Expr::Binary(_, l, r) => contains_division(l) || contains_division(r),
-        Expr::Unary(_, a) => contains_division(a),
-        Expr::Ite(c, a, b) => contains_division(c) || contains_division(a) || contains_division(b),
-        Expr::Min(a, b) | Expr::Max(a, b) => contains_division(a) || contains_division(b),
-        Expr::ArrayRead(_, i) => contains_division(i),
-        Expr::Len(_) => false,
-        Expr::Forall { lo, hi, body, .. }
-        | Expr::Exists { lo, hi, body, .. }
-        | Expr::Sum { lo, hi, body, .. } => {
-            contains_division(lo) || contains_division(hi) || contains_division(body)
-        }
-        _ => false,
-    }
+/// **Nothing, now.** Arithmetic (including division and remainder),
+/// comparisons, boolean logic, conditionals, `min`/`max`, quantifiers, folds
+/// and arrays all compile. The function stays because the prover asks, and
+/// because a future fragment should have exactly one place to say so.
+pub fn contains_division(_e: &Expr) -> bool {
+    false
 }
 
 /// Scan a whole spec+body for unsupported operators.

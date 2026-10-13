@@ -571,217 +571,24 @@ fn cmd_replay(args: &[String]) -> ExitCode {
 // ic examples
 // ---------------------------------------------------------------------------
 
+// The bundled examples are read straight from `examples/` at compile time.
+// One source of truth: the files the user can read are the files the tests
+// compile, with no chance of the embedded copy drifting (or being mangled by
+// an editor's encoding).
 const EXAMPLES: &[(&str, &str)] = &[
-    (
-        "transfer_funds.ic",
-        r#"// Money in, money out. Nothing created, nothing destroyed.
-//
-// The invariant `x + y == a + b` is NOT something the body states — it is
-// something the PROVER derives from the two definitional clauses plus the
-// precondition. This is what "proof-carrying intent" looks like.
-spec transfer_funds(a: int[0..255], b: int[0..255], amount: int[0..255])
-  returns (x: int[0..255], y: int[0..255])
-  requires amount <= a
-  requires b + amount <= 255
-  ensures  x == a - amount
-  ensures  y == b + amount
-  ensures  x + y == a + b
-  example (100, 50, 25) => (75, 75)
-  example (0, 0, 0) => (0, 0)
-{
-  x := a - amount;
-  y := b + amount;
-}
-"#,
-    ),
-    (
-        "saturating_sub.ic",
-        r#"// Subtraction that clamps at zero — never goes negative.
-// No body: ic synthesizes one that satisfies the contract for ALL inputs.
-spec saturating_sub(a: int[0..255], b: int[0..255])
-  returns (r: int[0..255])
-  ensures  r == if a >= b then a - b else 0
-  ensures  r <= a
-  example (10, 3) => (7)
-  example (3, 10) => (0)
-"#,
-    ),
-    (
-        "max_value.ic",
-        r#"// The classic, specified as three honest properties instead of an formula.
-// ic finds `max(a, b)` (or an equivalent) and the PROVER certifies it.
-spec max_value(a: int[0..127], b: int[0..127])
-  returns (r: int[0..127])
-  ensures  r >= a
-  ensures  r >= b
-  ensures  r == a || r == b
-  example (3, 9) => (9)
-  example (9, 3) => (9)
-  example (5, 5) => (5)
-"#,
-    ),
-    (
-        "clamp.ic",
-        r#"// Clamp into a range — the shape of every validated input ever written.
-spec clamp(v: int[0..255], lo: int[0..255], hi: int[0..255])
-  returns (r: int[0..255])
-  requires lo <= hi
-  ensures  r >= lo
-  ensures  r <= hi
-  ensures  if v >= lo && v <= hi then r == v else r == if v < lo then lo else hi
-  example (50, 10, 20) => (20)
-  example (15, 10, 20) => (15)
-  example (5, 10, 20) => (10)
-"#,
-    ),
-    (
-        "safe_reciprocal.ic",
-        r#"// Division that can NEVER fault: the precondition excludes the divisor
-// being zero, and the prover checks that exclusion actually holds for
-// every input it claims to protect. (Division uses the exhaustive engine;
-// the BDD engine honestly declines rather than guessing.)
-spec safe_reciprocal(a: int[0..255], b: int[0..255])
-  returns (r: int[0..255])
-  requires b != 0
-  requires a / b <= 255
-  ensures  r == a / b
-  example (10, 2) => (5)
-  example (9, 3) => (3)
-{
-  r := a / b;
-}
-"#,
-    ),
-    (
-        "weighted_sum.ic",
-        r#"// A tiny perceptron cell — the shape of every ML kernel, but verified.
-// 2*a + b, for all a, b in the domain, proven not merely tested.
-spec weighted_sum(a: int[0..63], b: int[0..63])
-  returns (r: int[0..191])
-  ensures  r == 2 * a + b
-  example (1, 1) => (3)
-  example (10, 5) => (25)
-"#,
-    ),
-    (
-        "consensus.ic",
-        r#"// Two-of-three majority — the workhorse of fault-tolerant systems,
-// expressed as properties and synthesized into code.
-spec consensus(v1: int[0..1], v2: int[0..1], v3: int[0..1])
-  returns (r: int[0..1])
-  ensures  r == if v1 + v2 + v3 >= 2 then 1 else 0
-  example (1, 1, 0) => (1)
-  example (1, 0, 0) => (0)
-  example (1, 1, 1) => (1)
-"#,
-    ),
-    (
-        "sum_to_n.ic",
-        r#"// LOOPS. A loop is an infinite family of executions; testing it is exactly
-// what does not work. The answer is an inductive invariant: it holds on
-// entry, is preserved by every iteration, and implies the postcondition
-// when the guard fails. `decreases` adds termination.
-spec sum_to_n(n: int[0..100])
-  returns (s: int[0..5050])
-  locals (i: int[0..101], acc: int[0..5050])
-  requires n >= 0
-  ensures  s == sum(k in 0..n: k)
-  ensures  s >= 0
-{
-  i := 0;
-  acc := 0;
-  while i <= n
-    invariant acc == sum(k in 0..i - 1: k)
-    invariant i >= 0
-    invariant i <= n + 1
-    decreases n - i + 1
-  {
-    acc := acc + i;
-    i := i + 1;
-  }
-  s := acc;
-}
-"#,
-    ),
-    (
-        "array_sum.ic",
-        r#"// ARRAYS. An array is exactly N integer variables with a declared index
-// domain, and `a[i]` with a symbolic `i` is an ITE chain over them — exact
-// for fixed-size arrays. The invariant names a *slice*: the sum of
-// everything counted so far.
-spec array_sum(a: array[5] of int[0..20])
-  returns (s: int[0..100])
-  locals (i: int[0..5], acc: int[0..100])
-  ensures  s == sum(k in 0..4: a[k])
-  ensures  s >= 0
-{
-  i := 0;
-  acc := 0;
-  while i < 5
-    invariant acc == sum(k in 0..i - 1: a[k])
-    invariant i >= 0
-    invariant i <= 5
-    decreases 5 - i
-  {
-    acc := acc + a[i];
-    i := i + 1;
-  }
-  s := acc;
-}
-"#,
-    ),
-    (
-        "reverse_text.ic",
-        r#"// TEXT. A string is an array of character codes — 65..90 is A..Z. Not a
-// trick: that is what a string is, so every string property is an array
-// property. The contract quantifies over ALL positions at once.
-spec reverse_text(s: array[4] of int[65..90])
-  returns (r: array[4] of int[65..90])
-  ensures  forall i in 0..3: r[i] == s[3 - i]
-  ensures  forall i in 0..3: r[i] >= 65 && r[i] <= 90
-{
-  r[0] := s[3];
-  r[1] := s[2];
-  r[2] := s[1];
-  r[3] := s[0];
-}
-"#,
-    ),
-    (
-        "split_bill.ic",
-        r#"// MONEY. `dec<2>` is exact fixed point: the value is stored/10^2, so this
-// is 0.00 .. 1000.00 in cents. No IEEE-754 model, no rounding surprises.
-// Note what the type system refuses: comparing money to a bare integer is a
-// UNIT ERROR, and multiplying two decimals would square the scale.
-spec split_bill(total: dec<2>[0..100000], people: int[1..100])
-  returns (each: dec<2>[0..100000], rest: dec<2>[0..100000])
-  requires people >= 1
-  ensures  rest == total - each * people
-  ensures  rest >= 0
-  ensures  rest <= total
-{
-  each := total / people;
-  rest := total - each * people;
-}
-"#,
-    ),
-    (
-        "big_range.ic",
-        r#"// BIG RANGES. Two billion values per parameter: 4 x 10^18 states. Far too
-// many to enumerate — so the enumerating engine declines (with a reason,
-// not a guess) and the symbolic engine reasons about all of them at once.
-spec big_range(x: int[0..2000000000], y: int[0..2000000000])
-  returns (total: int[0..4000000000], diff: int[-2000000000..2000000000])
-  requires x + y <= 4000000000
-  ensures  total == x + y
-  ensures  diff == x - y
-  ensures  total - diff == 2 * y
-{
-  total := x + y;
-  diff := x - y;
-}
-"#,
-    ),
+    ("transfer_funds.ic", include_str!("../examples/transfer_funds.ic")),
+    ("saturating_sub.ic", include_str!("../examples/saturating_sub.ic")),
+    ("max_value.ic", include_str!("../examples/max_value.ic")),
+    ("clamp.ic", include_str!("../examples/clamp.ic")),
+    ("safe_reciprocal.ic", include_str!("../examples/safe_reciprocal.ic")),
+    ("weighted_sum.ic", include_str!("../examples/weighted_sum.ic")),
+    ("consensus.ic", include_str!("../examples/consensus.ic")),
+    ("sum_to_n.ic", include_str!("../examples/sum_to_n.ic")),
+    ("array_sum.ic", include_str!("../examples/array_sum.ic")),
+    ("reverse_text.ic", include_str!("../examples/reverse_text.ic")),
+    ("split_bill.ic", include_str!("../examples/split_bill.ic")),
+    ("big_range.ic", include_str!("../examples/big_range.ic")),
+    ("dyn_length.ic", include_str!("../examples/dyn_length.ic")),
 ];
 
 fn cmd_examples(args: &[String]) -> ExitCode {

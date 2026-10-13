@@ -1,0 +1,23 @@
+// DYNAMIC LENGTH. The array has a fixed capacity, but the *used* length is a
+// runtime value `n` — the quantifier bound is a variable, and the loop runs
+// n times, not capacity times.
+spec dyn_length(a: array[5] of int[0..9], n: int[0..5])
+  returns (s: int[0..45])
+  locals (i: int[0..5], acc: int[0..45])
+  requires n <= 5
+  ensures  s == sum(k in 0..n - 1: a[k])
+  ensures  s >= 0
+{
+  i := 0;
+  acc := 0;
+  while i < n
+    invariant acc == sum(k in 0..i - 1: a[k])
+    invariant i >= 0
+    invariant i <= n
+    decreases n - i
+  {
+    acc := acc + a[i];
+    i := i + 1;
+  }
+  s := acc;
+}

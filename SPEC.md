@@ -3,7 +3,7 @@
 A spec declares a **contract**: what must be true before (`requires`), what must
 be true after (`ensures` / `invariant`), and concrete witnesses (`example`). A
 **body** is a straight-line program satisfying it — written by you, or
-synthesized by `ic`.
+synthesized by `probatum`.
 
 File extension: `.ic`. Comments: `// line` and `/* block /* nested */ */`.
 
@@ -33,7 +33,7 @@ flag: bool         // declared but not yet supported by the engines (v0.1)
 ```
 
 **Bounded domains are the point, not a limitation.** A proof over `int[0..255]`
-is a real theorem about a real range. `ic` refuses to pretend its domains are
+is a real theorem about a real range. `probatum` refuses to pretend its domains are
 infinite; what it proves, it proves completely.
 
 Parameter names and result names must be **distinct** — a result named `x` may
@@ -43,15 +43,15 @@ things in `requires` versus `ensures`.
 ### Clauses
 
 - **`requires EXPR`** — precondition. Inputs that violate it are **out of
-  domain**: the contract says nothing about them, and `ic` neither proves nor
+  domain**: the contract says nothing about them, and `probatum` neither proves nor
   refutes behavior there. If *no* input satisfies `requires`, the contract is
-  **vacuous** and `ic` refuses to certify (a vacuous contract "proves" nothing).
+  **vacuous** and `probatum` refuses to certify (a vacuous contract "proves" nothing).
 - **`ensures EXPR`** / **`invariant EXPR`** — postconditions. Must hold for
   **every** input in the domain that satisfies `requires`. In `ensures`, `x`
   (or `result.x`) refers to the result; bare names refer to parameters unless
   they are results.
 - **`example ( INPUTS ) => ( OUTPUTS )`** — a concrete witness, checked
-  **before** anything else. `ic` refuses a spec whose own witness contradicts
+  **before** anything else. `probatum` refuses a spec whose own witness contradicts
   its contract. Inputs must satisfy `requires` and lie in the declared domains;
   outputs must lie in the result domains.
 
@@ -95,7 +95,7 @@ while C invariant I …   // loop — the invariant IS the intent
 ```
 
 A `while` loop **requires at least one `invariant`** — without one the loop
-could only be run, never proved, and `ic` says so instead of pretending.
+could only be run, never proved, and `probatum` says so instead of pretending.
 
 `locals ( i: int[0..100], acc: int[0..5050] )` declares the loop's working
 variables. Statically typed, so every variable's domain is known; internally
@@ -113,7 +113,7 @@ Three obligations per loop, plus a fourth for termination:
 | termination | with `decreases V`: `V > 0` and `V` strictly decreases |
 
 Preservation + exit give **partial correctness**. Adding `decreases` gives
-**total correctness**. Without it `ic` reports partial correctness explicitly
+**total correctness**. Without it `probatum` reports partial correctness explicitly
 rather than quietly proving the weaker thing.
 
 ### Quantifiers and folds
@@ -138,7 +138,7 @@ declared domains and uses it to size proof circuits and reject impossible
 assignments:
 
 - **Disjoint ranges are rejected statically.** If the expression's range and
-  the result's declared range share no value, no input can make it fit — `ic`
+  the result's declared range share no value, no input can make it fit — `probatum`
   says so before running anything.
 - **Overlapping ranges are deferred to the prover.** Plain interval analysis
   cannot see that `a - amount >= 0` under `requires amount <= a`. That's a
@@ -177,7 +177,7 @@ Precedence, loosest to tightest:
 The evaluator treats a fault — division by zero, i64 overflow, a result outside
 its declared domain — as a **contract violation**, not a crash to be ignored. A
 program that faults on a valid input has broken its contract. This is how
-`ic` catches the classic "works until b = 0".
+`probatum` catches the classic "works until b = 0".
 
 ---
 
@@ -224,7 +224,7 @@ spec transfer_funds(a: int[0..255], b: int[0..255], amount: int[0..255])
 }
 ```
 
-Omit the body and `ic` produces exactly these two assignments by definitional
+Omit the body and `probatum` produces exactly these two assignments by definitional
 extraction, then proves the conservation invariant for **all 5,625,216**
 in-domain inputs — cross-validated by the BDD engine over the entire encoded
 domain at once.
@@ -235,10 +235,10 @@ domain at once.
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `example #N violates ensures #M` | The spec's own witness contradicts its contract | Fix the spec — `ic` will not synthesize against a broken contract |
+| `example #N violates ensures #M` | The spec's own witness contradicts its contract | Fix the spec — `probatum` will not synthesize against a broken contract |
 | `example input #N outside declared domain` | Witness out of range | Fix the example or widen the domain |
 | `expression ranges over X which is disjoint from declared Y` | No input can make the assignment fit | Fix the assignment or the result's domain |
 | `IMPOSSIBLE SPEC: at input (...) no output tuple satisfies every ensures` | Genuine unrealizability proof about the spec | Fix the spec — this is not a synthesis failure |
 | `no expression of size ≤ N found ... this is a search bound, not a proof of impossibility` | The enumerator's bound was hit | Add an example to pin the shape, or write the body yourself |
-| `precondition is UNSATISFIABLE (vacuous)` | Nothing reaches the body | Fix `requires` — `ic` will not certify a vacuous contract |
-| `ENGINES DISAGREE` | Internal error; two independent engines reached different verdicts | Please report — `ic` refuses to certify rather than guess |
+| `precondition is UNSATISFIABLE (vacuous)` | Nothing reaches the body | Fix `requires` — `probatum` will not certify a vacuous contract |
+| `ENGINES DISAGREE` | Internal error; two independent engines reached different verdicts | Please report — `probatum` refuses to certify rather than guess |

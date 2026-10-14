@@ -1,6 +1,6 @@
 # Roadmap
 
-Where `ic` is, and where it's going. Ordered by what makes proofs *more
+Where `probatum` is, and where it's going. Ordered by what makes proofs *more
 complete and more useful*, not by what is impressive in a demo.
 
 ## Shipped
@@ -11,7 +11,7 @@ complete and more useful*, not by what is impressive in a demo.
 - [x] Exhaustive engine; BDD-symbolic engine
 - [x] **Cross-validation**: independent engines must agree or we refuse to certify
 - [x] Vacuity check; statistical engine that never claims proof
-- [x] SHA-256-sealed certificates; tamper detection; independent `ic verify`
+- [x] SHA-256-sealed certificates; tamper detection; independent `probatum verify`
 - [x] CEGIS synthesizer (definitional + piecewise extraction, typed enumeration)
 - [x] Codegen: Rust, Go, DSL
 
@@ -55,7 +55,7 @@ complete and more useful*, not by what is impressive in a demo.
 
 ## Developer surface
 
-- [ ] `ic diff` — which clause a counterexample violates, in spec terms
+- [ ] `probatum diff` — which clause a counterexample violates, in spec terms
 - [ ] LSP: live clause checking, jump-to-counterexample
 - [ ] CI action with a diffable certificate artifact (a workflow ships today)
 - [ ] More codegen targets: TypeScript, Python, Zig, C
@@ -63,14 +63,14 @@ complete and more useful*, not by what is impressive in a demo.
 ## Not planned, deliberately
 
 - **Floating point without a specified model.** IEEE-754 is subtle (rounding,
-  NaN, signed zero). `ic` will not emit a proof whose semantics it has not
+  NaN, signed zero). `probatum` will not emit a proof whose semantics it has not
   written down. Exact fixed point covers the cases where exactness matters.
 - **Sampling that calls itself a proof.** The statistical engine exists, is
   labelled, and always exits non-zero. A heuristic that whispered "proved"
   would destroy the only thing worth having here.
 - **Trusting the synthesizer.** Synthesis proposes; the prover disposes. No
   future feature lets a synthesized artifact skip the prover.
-- **Loops without invariants.** A loop with no invariant can only be run. `ic`
+- **Loops without invariants.** A loop with no invariant can only be run. `probatum`
   makes that a parse error rather than a silent downgrade.
 
 ---

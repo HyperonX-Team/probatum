@@ -46,8 +46,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BIN=./target/release/ic
-          if [ ! -x "$BIN" ]; then BIN=./target/release/ic.exe; fi
+          BIN=./target/release/probatum
+          if [ ! -x "$BIN" ]; then BIN=./target/release/probatum.exe; fi
           mkdir -p ci-out
           "$BIN" examples ci-specs
           for f in ci-specs/*.ic; do
@@ -71,8 +71,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BIN=./target/release/ic
-          if [ ! -x "$BIN" ]; then BIN=./target/release/ic.exe; fi
+          BIN=./target/release/probatum
+          if [ ! -x "$BIN" ]; then BIN=./target/release/probatum.exe; fi
           for cert in ci-out/*.cert; do
             name=$(basename "$cert" .cert)
             "$BIN" verify "$cert" "ci-out/$name.ic"

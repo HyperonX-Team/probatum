@@ -1,14 +1,18 @@
-# `ic` — The Intent Compiler
+# probatum
+
+> *probatum* — Latin, "proved" (from *probare*: to test, to try, to prove).
+> *Probatum est* was stamped on remedies that had been tested and found true —
+> a certification mark. That is what this tool leaves on your code.
 
 **You write the contract. It writes — and proves — the code.**
 
-`ic` turns *behavioral intent* — preconditions, postconditions, inductive loop
+`probatum` turns *behavioral intent* — preconditions, postconditions, inductive loop
 invariants, quantifiers, witnesses — into a working program **plus a
 machine-checkable proof certificate** that the program satisfies that intent
 for **every** input in its domain. Not the inputs you tested. All of them.
 
 ```
-$ ic check examples/sum_to_n.ic
+$ probatum check examples/sum_to_n.ic
 
 spec: sum_to_n
   engine exhaustive-execution Proved   checked=101
@@ -26,13 +30,13 @@ invariant, cross-checked by running the loop on every input in the domain.
 ## Quick start
 
 ```console
-$ git clone <this repo> && cd intent-compiler
+$ git clone https://github.com/HyperonX-Team/probatum && cd probatum
 $ cargo build --release
 
-$ ./target/release/ic examples          # write the 13 bundled specs
-$ ./target/release/ic check   examples/sum_to_n.ic
-$ ./target/release/ic compile examples/transfer_funds.ic --emit rust,go
-$ ./target/release/ic verify  <out>/transfer_funds.cert <out>/transfer_funds.ic
+$ ./target/release/probatum examples          # write the 13 bundled specs
+$ ./target/release/probatum check   examples/sum_to_n.ic
+$ ./target/release/probatum compile examples/transfer_funds.ic --emit rust,go
+$ ./target/release/probatum verify  <out>/transfer_funds.cert <out>/transfer_funds.ic
 ```
 
 Every command exits `0` on proved/verified, `1` on refuted (with a concrete
@@ -51,7 +55,7 @@ Each of these is a real spec in [`examples/`](examples), all PROVED.
 ### Loops, by inductive invariant
 
 A loop is an infinite family of executions; testing it is exactly what does not
-work. `ic` requires an invariant — without one a loop could only be run, never
+work. `probatum` requires an invariant — without one a loop could only be run, never
 proved, and it says so.
 
 ```
@@ -63,7 +67,7 @@ while i <= n
 
 Three obligations are generated and discharged: the invariant holds on entry,
 is preserved by every iteration, and implies the postcondition when the guard
-fails. A fourth proves termination. Without `decreases`, `ic` reports **partial
+fails. A fourth proves termination. Without `decreases`, `probatum` reports **partial
 correctness explicitly** rather than quietly proving the weaker thing.
 
 ### Arrays and lists
@@ -124,7 +128,7 @@ Three rules, enforced in code, and they are the whole point:
 **1. Two independent engines must agree.** One walks every input and executes
 the program. The other bit-blasts the contract into a boolean function and
 reasons about the entire domain at once. They share no code — only
-[`eval.rs`](src/eval.rs) as their common specification. If they disagree, `ic`
+[`eval.rs`](src/eval.rs) as their common specification. If they disagree, `probatum`
 reports an internal error and **refuses to certify** rather than picking a
 winner.
 
@@ -138,7 +142,7 @@ precondition is refused instead of "proved".
 
 ### This is not decoration
 
-The safety net caught **four** real bugs in `ic`'s own proof machinery during
+The safety net caught **four** real bugs in `probatum`'s own proof machinery during
 development. None produced a false proof; the net held.
 
 | Bug | Symptom | Found by |
@@ -148,7 +152,7 @@ development. None produced a false proof; the net held.
 | `select()` OR-ed both branches' fault signals | a guarded-out out-of-bounds read accused a correct program | counterexample confirmation |
 | array substitution skipped quantifier bodies | `forall i: r[i]==…` kept the **old** `r` | a failing spec |
 
-`ic verify` re-derives the proof from the spec alone and byte-compares against
+`probatum verify` re-derives the proof from the spec alone and byte-compares against
 the certificate. An integration test tampers with one character and asserts
 rejection.
 

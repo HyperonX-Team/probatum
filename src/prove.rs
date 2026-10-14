@@ -1261,7 +1261,7 @@ impl Certificate {
     /// no timestamps (a certificate is a mathematical object, not a log).
     pub fn canonical(&self) -> String {
         let mut s = String::new();
-        s.push_str("ic-cert-1\n");
+        s.push_str("probatum-cert-1\n");
         s.push_str(&format!("spec: {}\n", self.spec_name));
         s.push_str(&format!("spec-sha256: {}\n", self.spec_sha256));
         s.push_str(&format!("program-sha256: {}\n", self.program_sha256));

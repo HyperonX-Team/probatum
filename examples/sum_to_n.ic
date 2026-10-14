@@ -5,7 +5,7 @@
 // that (1) holds before the loop, (2) is preserved by every iteration, and
 // (3) implies the postcondition when the guard finally fails.
 //
-// `ic` checks all three, plus termination (the `decreases` clause), and
+// `probatum` checks all three, plus termination (the `decreases` clause), and
 // cross-checks the result by *executing* the loop on every input in the
 // domain. Two independent methods: one executes, one reasons.
 spec sum_to_n(n: int[0..100])

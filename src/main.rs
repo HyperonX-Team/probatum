@@ -1,28 +1,28 @@
-//! `ic` — The Intent Compiler.
+//! `probatum` — The Intent Compiler.
 //!
 //! You write *behavioral intent* (preconditions, postconditions, invariants,
-//! witnesses). `ic` verifies a program against that intent — or synthesizes
+//! witnesses). `probatum` verifies a program against that intent — or synthesizes
 //! one — and emits a machine-checkable proof certificate that a separate,
 //! independent verification path can re-derive from scratch.
 //!
 //! Commands:
-//!   ic compile <spec.ic> [--emit rust,go,dsl] [--out DIR] [engine opts]
+//!   probatum compile <spec.ic> [--emit rust,go,dsl] [--out DIR] [engine opts]
 //!       Verify (or synthesize if the spec has no body) and emit artifacts:
 //!       the program, a proof certificate, and target-language code.
 //!
-//!   ic check <spec.ic> [engine opts]
+//!   probatum check <spec.ic> [engine opts]
 //!       Prove or refute the spec's body without emitting anything.
 //!       Exits 0 if proved, 1 if violated, 2 if inconclusive.
 //!
-//!   ic verify <cert-file> <spec.ic> [engine opts]
+//!   probatum verify <cert-file> <spec.ic> [engine opts]
 //!       Independent verification: re-derive the proof from the spec alone
 //!       and check it against the certificate. This is the path that does
 //!       NOT trust the compiler.
 //!
-//!   ic replay <cert-file>
+//!   probatum replay <cert-file>
 //!       Print a certificate's claims in human-readable form.
 //!
-//!   ic examples [DIR]
+//!   probatum examples [DIR]
 //!       Write the bundled example specs to DIR (default: ./examples).
 
 mod ast;
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
         Some("replay") => cmd_replay(&args[1..]),
         Some("examples") => cmd_examples(&args[1..]),
         Some("--version") | Some("version") | Some("-V") => {
-            println!("ic {}", env!("CARGO_PKG_VERSION"));
+            println!("probatum {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some("--help") | Some("help") | Some("-h") | None => {
@@ -60,7 +60,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("ic: unknown command `{}`\n", other);
+            eprintln!("probatum: unknown command `{}`\n", other);
             print_help();
             ExitCode::from(2)
         }
@@ -69,16 +69,16 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "ic — the intent compiler
+        "probatum — the intent compiler
 
 Write behavioral intent. Get verified code.
 
 USAGE:
-    ic compile <spec.ic> [--emit rust,go,dsl] [--out DIR] [opts]
-    ic check   <spec.ic> [opts]
-    ic verify  <cert-file> <spec.ic> [opts]
-    ic replay  <cert-file>
-    ic examples [DIR]
+    probatum compile <spec.ic> [--emit rust,go,dsl] [--out DIR] [opts]
+    probatum check   <spec.ic> [opts]
+    probatum verify  <cert-file> <spec.ic> [opts]
+    probatum replay  <cert-file>
+    probatum examples [DIR]
 
 OPTIONS (proof engines):
     --engine auto|exhaustive|bdd|statistical   choose engine (default: auto)
@@ -99,7 +99,7 @@ The spec language:
       ensures  x == a - b         // postcondition (must hold for ALL inputs)
       ensures  x + b == a         // invariants read the same way
       example (10, 3) => (7)      // concrete witness (checked first)
-    {{ x := a - b; }}               // optional: omit and ic synthesizes it"
+    {{ x := a - b; }}               // optional: omit it and probatum synthesizes one"
     );
 }
 
@@ -202,7 +202,7 @@ fn read_spec(path: &Path) -> Result<Spec, String> {
 }
 
 // ---------------------------------------------------------------------------
-// ic check
+// probatum check
 // ---------------------------------------------------------------------------
 
 fn cmd_check(args: &[String]) -> ExitCode {
@@ -222,7 +222,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
     };
     let Some(body) = spec.body.clone() else {
         eprintln!(
-            "error: {} has no body — run `ic compile {}` to synthesize one",
+            "error: {} has no body — run `probatum compile {}` to synthesize one",
             spec_path, spec_path
         );
         return ExitCode::from(2);
@@ -231,7 +231,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
 }
 
 // ---------------------------------------------------------------------------
-// ic compile
+// probatum compile
 // ---------------------------------------------------------------------------
 
 fn cmd_compile(args: &[String]) -> ExitCode {
@@ -259,12 +259,12 @@ fn cmd_compile(args: &[String]) -> ExitCode {
         Some(b) => (b, None),
         None => {
             eprintln!(
-                "ic: no body in spec — synthesizing one from intent (this is the fun part)..."
+                "probatum: no body in spec — synthesizing one from intent (this is the fun part)..."
             );
             match synth::synthesize(&spec, &popts) {
                 Ok(s) => {
                     eprintln!(
-                        "ic: synthesized via {} in {} CEGIS round(s), {} candidate(s) generated, {} pruned as equivalent",
+                        "probatum: synthesized via {} in {} CEGIS round(s), {} candidate(s) generated, {} pruned as equivalent",
                         s.stats.strategy,
                         s.stats.cegis_rounds,
                         s.stats.candidates_generated,
@@ -278,7 +278,7 @@ fn cmd_compile(args: &[String]) -> ExitCode {
                         let pairs: Vec<String> =
                             inputs.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
                         eprintln!(
-                            "ic: the contract is IMPOSSIBLE at input ({}) — no output within \
+                            "probatum: the contract is IMPOSSIBLE at input ({}) — no output within \
                              the declared result domains can satisfy every `ensures` clause. \
                              Fix the spec, not the program.",
                             pairs.join(", ")
@@ -292,7 +292,7 @@ fn cmd_compile(args: &[String]) -> ExitCode {
 
     // Prove (synthesis already proved, but we re-prove from the same body
     // so the certificate always describes a fresh, explicit proof run).
-    eprintln!("ic: proving...");
+    eprintln!("probatum: proving...");
     let proof = prove::prove(&spec, &body, &popts);
 
     let verdict_line = match &proof.verdict {
@@ -301,26 +301,26 @@ fn cmd_compile(args: &[String]) -> ExitCode {
         Verdict::NoViolationFound => "NO VIOLATION FOUND (not a proof)".to_string(),
         Verdict::GaveUp { reason } => format!("GAVE UP: {}", reason),
     };
-    eprintln!("ic: verdict: {}", verdict_line);
+    eprintln!("probatum: verdict: {}", verdict_line);
     for e in &proof.engines {
         let nodes = e.nodes.map(|n| format!(" nodes={}", n)).unwrap_or_default();
         eprintln!(
-            "ic:   engine {:<20} {:<28} checked={}{}",
+            "probatum:   engine {:<20} {:<28} checked={}{}",
             e.engine,
             format!("{:?}", e.verdict),
             e.checked,
             nodes
         );
         for n in &e.notes {
-            eprintln!("ic:     {}", n);
+            eprintln!("probatum:     {}", n);
         }
     }
     if proof.cross_validated {
-        eprintln!("ic: ✓ cross-validated: two independent complete engines agree");
+        eprintln!("probatum: ✓ cross-validated: two independent complete engines agree");
     }
 
     if !matches!(proof.verdict, Verdict::Proved | Verdict::Violated) {
-        eprintln!("ic: refusing to emit artifacts for an inconclusive verdict");
+        eprintln!("probatum: refusing to emit artifacts for an inconclusive verdict");
         return ExitCode::from(2);
     }
 
@@ -364,7 +364,7 @@ fn cmd_compile(args: &[String]) -> ExitCode {
         .clone()
         .unwrap_or_else(|| PathBuf::from(format!("{}-verified", spec.name)));
     if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        eprintln!("ic: cannot create {:?}: {}", out_dir, e);
+        eprintln!("probatum: cannot create {:?}: {}", out_dir, e);
         return ExitCode::from(2);
     }
 
@@ -382,13 +382,13 @@ fn cmd_compile(args: &[String]) -> ExitCode {
         "refuted"
     };
     if write(cert_path.clone(), &cert.render()).is_err() {
-        eprintln!("ic: failed to write certificate");
+        eprintln!("probatum: failed to write certificate");
         return ExitCode::from(2);
     }
     written.push(cert_path);
 
     // The DSL artifact is ALWAYS written, even if not requested: it embeds
-    // the program, and `ic verify` needs it to re-derive the proof against
+    // the program, and `probatum verify` needs it to re-derive the proof against
     // the certificate. Requesting `--emit rust,go` must not break verify.
     let mut targets: Vec<String> = o.emit.clone();
     if !targets.iter().any(|t| matches!(t.as_str(), "dsl" | "ic")) {
@@ -397,50 +397,50 @@ fn cmd_compile(args: &[String]) -> ExitCode {
 
     for lang_name in &targets {
         let Some(lang) = codegen::TargetLang::from_name(lang_name) else {
-            eprintln!("ic: unknown target `{}` (want rust, go, or dsl)", lang_name);
+            eprintln!("probatum: unknown target `{}` (want rust, go, or dsl)", lang_name);
             return ExitCode::from(2);
         };
         match codegen::emit(&spec, &body, lang, &cert.cert_sha256) {
             Ok(code) => {
                 let path = base.with_extension(lang.file_extension());
                 if write(path.clone(), &code).is_err() {
-                    eprintln!("ic: failed to write {:?}", path);
+                    eprintln!("probatum: failed to write {:?}", path);
                     return ExitCode::from(2);
                 }
                 written.push(path);
             }
             Err(e) => {
-                eprintln!("ic: codegen for {} failed: {}", lang_name, e);
+                eprintln!("probatum: codegen for {} failed: {}", lang_name, e);
                 return ExitCode::from(2);
             }
         }
     }
 
-    eprintln!("ic: {} — {} in {:?}", proof_status, spec.name, out_dir);
+    eprintln!("probatum: {} — {} in {:?}", proof_status, spec.name, out_dir);
     for p in &written {
-        eprintln!("ic:   {}", p.display());
+        eprintln!("probatum:   {}", p.display());
     }
     if let Some(st) = &synth_stats {
         eprintln!(
-            "ic:   (synthesized: {} strategy, {} examples used)",
+            "probatum:   (synthesized: {} strategy, {} examples used)",
             st.strategy, st.examples_used
         );
     }
     eprintln!(
-        "ic:   cert-sha256: {}",
+        "probatum:   cert-sha256: {}",
         &cert.cert_sha256[..cert.cert_sha256.len().min(32)]
     );
 
     if proof.verdict == Verdict::Proved {
         ExitCode::SUCCESS
     } else {
-        eprintln!("ic: WARNING: emitted artifacts describe a REFUTED program (educational; do not ship)");
+        eprintln!("probatum: WARNING: emitted artifacts describe a REFUTED program (educational; do not ship)");
         ExitCode::from(1)
     }
 }
 
 // ---------------------------------------------------------------------------
-// ic verify — the path that does not trust the compiler
+// probatum verify — the path that does not trust the compiler
 // ---------------------------------------------------------------------------
 
 fn cmd_verify(args: &[String]) -> ExitCode {
@@ -455,18 +455,18 @@ fn cmd_verify(args: &[String]) -> ExitCode {
     let cert_text = match std::fs::read_to_string(cert_path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("ic: cannot read certificate: {}", e);
+            eprintln!("probatum: cannot read certificate: {}", e);
             return ExitCode::from(2);
         }
     };
     let cert = match Certificate::parse(&cert_text) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("ic: certificate INVALID: {}", e);
+            eprintln!("probatum: certificate INVALID: {}", e);
             return ExitCode::from(2);
         }
     };
-    eprintln!("ic: certificate digest: OK");
+    eprintln!("probatum: certificate digest: OK");
 
     let spec = match read_spec(Path::new(spec_path)) {
         Ok(s) => s,
@@ -481,19 +481,19 @@ fn cmd_verify(args: &[String]) -> ExitCode {
     let digest = sha256::sha256_hex(canonical.as_bytes());
     if digest != cert.spec_sha256 {
         eprintln!(
-            "ic: SPEC MISMATCH: certificate was issued for a different spec\n\
+            "probatum: SPEC MISMATCH: certificate was issued for a different spec\n\
              \tic:   cert says:    {}\n\
              \tic:   this spec is: {}",
             cert.spec_sha256, digest
         );
         return ExitCode::from(2);
     }
-    eprintln!("ic: spec digest: OK");
+    eprintln!("probatum: spec digest: OK");
 
     // Re-derive the proof from the spec alone.
     let Some(body) = spec.body.clone() else {
         eprintln!(
-            "ic: this spec file has no body.\n\
+            "probatum: this spec file has no body.\n\
              \tIf the program was synthesized, verify against the generated DSL file\n\
              \t(e.g. <out>/<name>.ic) — it embeds the program, and its contract\n\
              \tdigest will still match the original spec's certificate."
@@ -506,41 +506,41 @@ fn cmd_verify(args: &[String]) -> ExitCode {
     let derived_verdict = format!("{:?}", proof.verdict);
     if derived_verdict != cert.verdict {
         eprintln!(
-            "ic: VERDICT MISMATCH: certificate says {}, re-derivation says {}",
+            "probatum: VERDICT MISMATCH: certificate says {}, re-derivation says {}",
             cert.verdict, derived_verdict
         );
         return ExitCode::from(2);
     }
-    eprintln!("ic: verdict re-derived: {} — matches certificate", derived_verdict);
+    eprintln!("probatum: verdict re-derived: {} — matches certificate", derived_verdict);
 
     // Program digest check (binds the certificate to the exact program).
     let program_src = render_program(&spec, &body);
     let pd = sha256::sha256_hex(program_src.as_bytes());
     if pd != cert.program_sha256 {
         eprintln!(
-            "ic: PROGRAM MISMATCH: certificate binds to a different program\n\
+            "probatum: PROGRAM MISMATCH: certificate binds to a different program\n\
              \tic:   cert says:     {}\n\
              \tic: this program is: {}",
             cert.program_sha256, pd
         );
         return ExitCode::from(2);
     }
-    eprintln!("ic: program digest: OK");
+    eprintln!("probatum: program digest: OK");
 
     if proof.verdict == Verdict::Proved {
-        eprintln!("ic: ✓ VERIFIED — certificate is authentic and the proof re-derives");
+        eprintln!("probatum: ✓ VERIFIED — certificate is authentic and the proof re-derives");
         ExitCode::SUCCESS
     } else {
-        eprintln!("ic: certificate authentic, but verdict is {}", cert.verdict);
+        eprintln!("probatum: certificate authentic, but verdict is {}", cert.verdict);
         if let Some(cx) = &cert.counterexample {
-            eprintln!("ic: counterexample: {:?}", cx.inputs);
+            eprintln!("probatum: counterexample: {:?}", cx.inputs);
         }
         ExitCode::from(1)
     }
 }
 
 // ---------------------------------------------------------------------------
-// ic replay
+// probatum replay
 // ---------------------------------------------------------------------------
 
 fn cmd_replay(args: &[String]) -> ExitCode {
@@ -550,7 +550,7 @@ fn cmd_replay(args: &[String]) -> ExitCode {
     let text = match std::fs::read_to_string(cert_path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("ic: cannot read certificate: {}", e);
+            eprintln!("probatum: cannot read certificate: {}", e);
             return ExitCode::from(2);
         }
     };
@@ -561,14 +561,14 @@ fn cmd_replay(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("ic: certificate INVALID: {}", e);
+            eprintln!("probatum: certificate INVALID: {}", e);
             ExitCode::from(2)
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// ic examples
+// probatum examples
 // ---------------------------------------------------------------------------
 
 // The bundled examples are read straight from `examples/` at compile time.
@@ -594,18 +594,18 @@ const EXAMPLES: &[(&str, &str)] = &[
 fn cmd_examples(args: &[String]) -> ExitCode {
     let dir = PathBuf::from(args.first().cloned().unwrap_or_else(|| "examples".into()));
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("ic: cannot create {:?}: {}", dir, e);
+        eprintln!("probatum: cannot create {:?}: {}", dir, e);
         return ExitCode::from(2);
     }
     for (name, src) in EXAMPLES {
         let path = dir.join(name);
         if let Err(e) = std::fs::write(&path, src) {
-            eprintln!("ic: cannot write {:?}: {}", path, e);
+            eprintln!("probatum: cannot write {:?}: {}", path, e);
             return ExitCode::from(2);
         }
         println!("wrote {}", path.display());
     }
-    println!("\nTry:  ic compile {} --emit rust,go", dir.join("transfer_funds.ic").display());
+    println!("\nTry:  probatum compile {} --emit rust,go", dir.join("transfer_funds.ic").display());
     ExitCode::SUCCESS
 }
 
@@ -614,7 +614,7 @@ fn cmd_examples(args: &[String]) -> ExitCode {
 // ---------------------------------------------------------------------------
 
 fn usage_err(msg: &str) -> ExitCode {
-    eprintln!("ic: {}\n", msg);
+    eprintln!("probatum: {}\n", msg);
     print_help();
     ExitCode::from(2)
 }
@@ -725,7 +725,7 @@ fn render_program(spec: &Spec, body: &Program) -> String {
 ///
 /// Comments and formatting don't change meaning, and the body is bound
 /// separately by `program-sha256` — so this function deliberately excludes
-/// the body. That split is what lets `ic verify` check a synthesized spec
+/// the body. That split is what lets `probatum verify` check a synthesized spec
 /// against the *original* body-less file: contract digest matches the
 /// intent, program digest binds the synthesized code.
 fn canonical_spec_text(spec: &Spec) -> String {

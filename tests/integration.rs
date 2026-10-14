@@ -7,9 +7,9 @@
 
 use std::process::Command;
 
-fn ic_bin() -> Command {
-    // `cargo test` sets CARGO_BIN_EXE_ic for integration tests.
-    Command::new(env!("CARGO_BIN_EXE_ic"))
+fn probatum_bin() -> Command {
+    // `cargo test` sets CARGO_BIN_EXE_probatum for integration tests.
+    Command::new(env!("CARGO_BIN_EXE_probatum"))
 }
 
 /// A per-test scratch directory. Keyed on process id AND a caller-provided
@@ -27,10 +27,10 @@ fn workspace(label: &str) -> std::path::PathBuf {
 #[test]
 fn examples_write_and_all_compile_proved() {
     let dir = workspace("examples");
-    let out = ic_bin()
+    let out = probatum_bin()
         .args(["examples", dir.to_str().unwrap()])
         .output()
-        .expect("run ic examples");
+        .expect("run probatum examples");
     assert!(out.status.success(), "examples failed: {:?}", out);
 
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -43,7 +43,7 @@ fn examples_write_and_all_compile_proved() {
 
     for spec in entries {
         let out_dir = dir.join(format!("build-{}", spec.file_stem().unwrap().to_string_lossy()));
-        let out = ic_bin()
+        let out = probatum_bin()
             .args([
                 "compile",
                 spec.to_str().unwrap(),
@@ -53,7 +53,7 @@ fn examples_write_and_all_compile_proved() {
                 out_dir.to_str().unwrap(),
             ])
             .output()
-            .expect("run ic compile");
+            .expect("run probatum compile");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             out.status.success(),
@@ -101,7 +101,7 @@ fn certificate_roundtrip_through_independent_verify() {
     .unwrap();
 
     let out_dir = dir.join("build");
-    let compile = ic_bin()
+    let compile = probatum_bin()
         .args([
             "compile",
             spec_path.to_str().unwrap(),
@@ -113,7 +113,7 @@ fn certificate_roundtrip_through_independent_verify() {
     assert!(compile.status.success(), "{:?}", compile);
 
     // Independent verify against the GENERATED dsl (embeds the program).
-    let verify = ic_bin()
+    let verify = probatum_bin()
         .args([
             "verify",
             out_dir.join("transfer.cert").to_str().unwrap(),
@@ -145,7 +145,7 @@ fn tampered_certificate_is_rejected() {
     )
     .unwrap();
     let out_dir = dir.join("build");
-    let compile = ic_bin()
+    let compile = probatum_bin()
         .args([
             "compile",
             spec_path.to_str().unwrap(),
@@ -163,7 +163,7 @@ fn tampered_certificate_is_rejected() {
     assert_ne!(original, tampered, "test bug: nothing to tamper");
     std::fs::write(&cert_path, &tampered).unwrap();
 
-    let replay = ic_bin().args(["replay", cert_path.to_str().unwrap()]).output().unwrap();
+    let replay = probatum_bin().args(["replay", cert_path.to_str().unwrap()]).output().unwrap();
     assert!(
         !replay.status.success(),
         "tampered certificate must not verify"
@@ -185,7 +185,7 @@ fn broken_body_is_refuted_with_counterexample() {
         "#,
     )
     .unwrap();
-    let check = ic_bin().args(["check", spec_path.to_str().unwrap()]).output().unwrap();
+    let check = probatum_bin().args(["check", spec_path.to_str().unwrap()]).output().unwrap();
     let stdout = String::from_utf8_lossy(&check.stdout);
     assert!(
         !check.status.success(),
@@ -215,7 +215,7 @@ fn generated_rust_code_compiles_in_isolation() {
     )
     .unwrap();
     let out_dir = dir.join("build");
-    let compile = ic_bin()
+    let compile = probatum_bin()
         .args([
             "compile",
             spec_path.to_str().unwrap(),
@@ -257,7 +257,7 @@ fn statistical_engine_never_claims_proof() {
         "#,
     )
     .unwrap();
-    let check = ic_bin()
+    let check = probatum_bin()
         .args([
             "check",
             spec_path.to_str().unwrap(),
@@ -294,7 +294,7 @@ fn vacuous_spec_is_refused() {
         "#,
     )
     .unwrap();
-    let check = ic_bin().args(["check", spec_path.to_str().unwrap()]).output().unwrap();
+    let check = probatum_bin().args(["check", spec_path.to_str().unwrap()]).output().unwrap();
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&check.stdout),
@@ -333,7 +333,7 @@ fn negative_domains_cross_validate() {
     )
     .unwrap();
     let out_dir = dir.join("build");
-    let compile = ic_bin()
+    let compile = probatum_bin()
         .args([
             "compile",
             spec_path.to_str().unwrap(),
@@ -373,7 +373,7 @@ fn cegis_refinement_loop_recovers_from_prover_refutation() {
     )
     .unwrap();
     let out_dir = dir.join("build");
-    let compile = ic_bin()
+    let compile = probatum_bin()
         .args([
             "compile",
             spec_path.to_str().unwrap(),

@@ -28,7 +28,7 @@
 //!
 //! *Preservation* and *exit* together give **partial correctness**: if the
 //! loop terminates, the postcondition holds. Adding a `decreases` clause
-//! upgrades that to **total correctness**. Without one, `ic` says so instead
+//! upgrades that to **total correctness**. Without one, `probatum` says so instead
 //! of quietly proving the weaker thing.
 
 use crate::ast::*;

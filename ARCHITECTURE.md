@@ -1,6 +1,6 @@
 # Architecture
 
-How `ic` is put together, and why each piece is shaped the way it is.
+How `probatum` is put together, and why each piece is shaped the way it is.
 
 ```
             spec.ic                          (the source of truth)
@@ -39,7 +39,7 @@ How `ic` is put together, and why each piece is shaped the way it is.
 └─────────────┬───────────────┘
               │
       ┌───────▼────────┐      ┌──────────────────┐
-      │  certificate   │──────│  ic verify       │  re-derives the proof
+      │  certificate   │──────│  probatum verify       │  re-derives the proof
       │  SHA-256 sealed│      │  (does NOT trust │  from the spec alone and
       └───────┬────────┘      │   the compiler)  │  checks the certificate
               │               └──────────────────┘
@@ -65,7 +65,7 @@ genuine independent evidence, not a tautology.
 The evaluator's semantics, stated plainly:
 
 - **`requires` false ⇒ out of domain.** Not a violation. The contract says
-  nothing about inputs it excludes. `ic` skips them — it does not "prove" them.
+  nothing about inputs it excludes. `probatum` skips them — it does not "prove" them.
 - **`ensures` false ⇒ violation.** A concrete counterexample exists.
 - **Division by zero, overflow, out-of-range result ⇒ fault**, which counts as
   a violation. A program that crashes on a valid input has broken its contract.
@@ -99,7 +99,7 @@ verdicts:
    confidence Y" and exits 2.
 
 **Cross-validation:** when two complete engines both ran, their verdicts must
-match. A mismatch is an *internal error* — `ic` refuses to certify rather than
+match. A mismatch is an *internal error* — `probatum` refuses to certify rather than
 pick a winner. This is the single most important property of the design, and
 it has caught two real bugs (below).
 
@@ -108,7 +108,7 @@ it has caught two real bugs (below).
 ## What the net caught
 
 The safety net is not theater. During development it caught **four** genuine
-bugs in `ic`'s own proof machinery — none produced a false proof (the net
+bugs in `probatum`'s own proof machinery — none produced a false proof (the net
 held), but each would have produced confusing or wrong behaviour:
 
 1. **BDD `ite` cache-key truncation.** The memoization key for the ternary
@@ -155,7 +155,7 @@ still has to survive the full prover. The strategy ladder, first success wins:
    different but observationally identical candidates collapse, which is what
    keeps the space from exploding.
 4. **CEGIS refinement.** A candidate that passes every example is handed to the
-   prover. If the prover refutes it, `ic` takes the counterexample input and
+   prover. If the prover refutes it, `probatum` takes the counterexample input and
    *solves for a valid output* there by bounded enumeration over the declared
    result domains (checking every `ensures`). The new witness joins the example
    set and the search resumes, strictly smarter.
@@ -165,7 +165,7 @@ still has to survive the full prover. The strategy ladder, first success wins:
 - *Search exhaustion* ⇒ "no program of size ≤ N found" — **not** a proof that
   none exists. Reported as a bound, with the search statistics.
 - *Unrealizable input* ⇒ a concrete input where **no** output tuple can satisfy
-  the contract. This is a genuine impossibility proof about the *spec*, and `ic`
+  the contract. This is a genuine impossibility proof about the *spec*, and `probatum`
   prints that input and tells you to fix the spec, not the program.
 
 ---
@@ -177,7 +177,7 @@ nondeterminism — bound by SHA-256 (hand-written, FIPS 180-4, test-vector
 verified in [`src/sha256.rs`](src/sha256.rs)):
 
 ```
-ic-cert-1
+probatum-cert-1
 spec: transfer_funds
 spec-sha256: <hash of the CONTRACT, comments and formatting excluded>
 program-sha256: <hash of the PROGRAM>
@@ -191,11 +191,11 @@ cert-sha256: <hash over everything above>
 ```
 
 The contract digest deliberately **excludes the body**: that split is what lets
-`ic verify` check a *synthesized* spec against the original body-less file — the
+`probatum verify` check a *synthesized* spec against the original body-less file — the
 contract digest matches the intent, the program digest binds the synthesized
 code.
 
-`ic verify` re-derives the proof from the spec alone and compares: digest, then
+`probatum verify` re-derives the proof from the spec alone and compares: digest, then
 verdict, then program hash. Any mismatch — one byte of the spec, one line of the
 program — and it refuses. An integration test tampers with a certificate by a
 single character and asserts rejection.
@@ -225,7 +225,7 @@ even if tests pass.
 
 What you must trust to believe a certificate:
 
-1. **The Rust compiler and runtime** (for the `ic` binary you ran).
+1. **The Rust compiler and runtime** (for the `probatum` binary you ran).
 2. **The evaluator's semantics** — [`src/eval.rs`](src/eval.rs), a few hundred
    lines, deliberately boring, heavily unit-tested.
 3. **The certificate digest** — hand-written SHA-256 with FIPS test vectors.
@@ -235,5 +235,5 @@ What you do **not** have to trust:
 - The synthesizer (it can only propose; the prover disposes).
 - The BDD engine alone (cross-validated against the exhaustive engine, or
   declining honestly).
-- The compiler that issued the certificate (`ic verify` re-derives independently).
+- The compiler that issued the certificate (`probatum verify` re-derives independently).
 - Any external SMT solver or library — there are none. Zero dependencies.

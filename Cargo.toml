@@ -1,8 +1,8 @@
 [package]
-name = "intent_compiler"
+name = "probatum"
 version = "0.1.0"
 edition = "2021"
-description = "The Intent Compiler (ic): compile behavioral intent into programs with machine-checkable proof certificates"
+description = "probatum — an intent compiler: write the contract, get the proof"
 license = "MIT"
 authors = ["Intent Compiler contributors"]
 
@@ -12,14 +12,14 @@ authors = ["Intent Compiler contributors"]
 [dependencies]
 
 [[bin]]
-name = "ic"
+name = "probatum"
 path = "src/main.rs"
 
 [profile.release]
 lto = true
 codegen-units = 1
 
-# Integration tests invoke the real `ic` binary and enumerate millions of
+# Integration tests invoke the real `probatum` binary and enumerate millions of
 # inputs; without optimization a single test run takes ~9 minutes. Tests
 # exercise the same code — only faster.
 [profile.test]

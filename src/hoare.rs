@@ -198,12 +198,6 @@ fn free_vars(e: &Expr, out: &mut std::collections::HashSet<String>) {
     }
 }
 
-/// The variables an obligation quantifies over: every parameter, local and
-/// result, in canonical order.
-fn scope_vars_all(spec: &Spec) -> Vec<Binding> {
-    spec.all_vars()
-}
-
 /// Read-over-write substitution for `a[i] := e`.
 ///
 /// A *constant* index replaces exactly that element. A *symbolic* index is

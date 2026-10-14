@@ -66,8 +66,6 @@ pub enum Fault {
     /// fault rather than silently accepting a partial execution — a program
     /// that doesn't terminate on a valid input has broken its contract.
     NonTermination { steps: u64 },
-    /// A quantifier's bound variable was used outside its scope (internal).
-    UnboundVariable,
 }
 
 impl std::fmt::Display for Fault {
@@ -92,7 +90,6 @@ impl std::fmt::Display for Fault {
                 "loop did not terminate within {} steps",
                 steps
             ),
-            Fault::UnboundVariable => write!(f, "unbound variable"),
         }
     }
 }
@@ -469,18 +466,6 @@ pub fn check_contract(
 /// non-termination. High enough for any loop over a bounded domain, low
 /// enough to fail fast on a runaway.
 pub const DEFAULT_STEP_LIMIT: u64 = 2_000_000;
-
-/// Number of scalar input slots a spec consumes. An array parameter takes one
-/// slot per element, in index order.
-pub fn input_arity(spec: &Spec) -> usize {
-    spec.params
-        .iter()
-        .map(|b| match b.ty {
-            Type::Array { index, .. } => index.size() as usize,
-            _ => 1,
-        })
-        .sum()
-}
 
 /// Bind an input vector into an environment: scalars to `params`, array
 /// parameters to `arrays`. Array elements are range-checked here.

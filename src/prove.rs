@@ -144,6 +144,62 @@ impl Default for ProverOptions {
 ///   execution shows the loop behaves; the invariant proof shows it must.
 pub fn prove(spec: &Spec, prog: &Program, opts: &ProverOptions) -> ProofResult {
     let domain = spec.input_domain_size();
+
+    // The spec's `example` witnesses are constraints the author stated, so
+    // they are checked before anything else — for BOTH paths. A contract can
+    // be weaker than the examples it ships with (`ensures r >= a` alongside
+    // `example (5) => (7)`), and a program that satisfies only the contract
+    // would otherwise be certified while contradicting its own witness.
+    if let Some((idx, inputs, got, expected)) =
+        eval::check_examples_program(spec, prog).into_iter().next()
+    {
+        let got_str = match &got {
+            Ok(vals) => vals
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            Err(fault) => format!("fault: {}", fault),
+        };
+        let expected_str = expected
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return ProofResult {
+            verdict: Verdict::Violated,
+            engines: vec![EngineReport {
+                engine: "examples".into(),
+                verdict: Verdict::Violated,
+                checked: spec.examples.len() as u128,
+                nodes: None,
+                notes: vec![format!(
+                    "example #{} is violated: inputs {} produce ({}) but the spec says ({})",
+                    idx + 1,
+                    describe_inputs(spec, &inputs)
+                        .iter()
+                        .map(|(n, v)| format!("{}={}", n, v))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    got_str,
+                    expected_str
+                )],
+            }],
+            counterexample: Some(Counterexample {
+                inputs: describe_inputs(spec, &inputs),
+                violation: format!(
+                    "example #{}: got ({}) but the spec says ({})",
+                    idx + 1,
+                    got_str,
+                    expected_str
+                ),
+            }),
+            pre_witness: Some(Vec::new()),
+            stat_bound: None,
+            cross_validated: false,
+        };
+    }
+
     let straight = ast::as_straight_line(prog).filter(|_| !ast::program_uses_arrays(prog));
     match straight {
         Some(body) => prove_straight(spec, &body, opts, domain),
@@ -212,6 +268,13 @@ fn prove_with_hoare(
             let r = check_validity(&ob.vars, &ob.assumptions, &ob.goal, opts);
             any_ran = true;
             total_checked += r.engines.iter().map(|e| e.checked).sum::<u128>();
+            // The obligation checker explains declining decisions ("array
+            // state: decided symbolically", "state space is N: not
+            // enumerated"). Those explanations are the honest part of the
+            // report — surface them instead of dropping them.
+            for n in &r.notes {
+                notes.push(format!("[{}] {}", ob.kind, n));
+            }
             for e in &r.engines {
                 if let Some(n) = e.nodes {
                     worst_nodes = worst_nodes.max(n);
@@ -222,8 +285,7 @@ fn prove_with_hoare(
                 Verdict::Violated => {
                     all_proved = false;
                     failed = Some((ob.kind.clone(), Counstext {
-                        location: ob.location.clone(),
-                        counterexample: r.counterexample.clone(),
+                                    counterexample: r.counterexample.clone(),
                         obligation: ob.to_string(),
                     }));
                     break;
@@ -330,7 +392,6 @@ fn prove_with_hoare(
 
 /// Extra context for a failed obligation (kept out of the public error type).
 struct Counstext {
-    location: String,
     counterexample: Option<Counterexample>,
     obligation: String,
 }

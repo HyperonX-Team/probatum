@@ -521,25 +521,6 @@ impl Parser {
         }
     }
 
-    /// Every name assigned anywhere in the program (recursively).
-    fn collect_assigned(prog: &[Stmt], out: &mut Vec<String>) {
-        for s in prog {
-            match s {
-                Stmt::Assign { name, .. } => out.push(name.clone()),
-                Stmt::If {
-                    then_body,
-                    else_body,
-                    ..
-                } => {
-                    Self::collect_assigned(then_body, out);
-                    Self::collect_assigned(else_body, out);
-                }
-                Stmt::While { body, .. } => Self::collect_assigned(body, out),
-                _ => {}
-            }
-        }
-    }
-
     // Expression precedence: || < && < comparison < additive < multiplicative < unary < primary
 
     pub fn parse_expr(&mut self) -> PResult<Expr> {

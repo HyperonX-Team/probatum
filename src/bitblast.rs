@@ -1115,12 +1115,6 @@ fn res_decl(spec: &Spec, name: &str) -> (i64, i64) {
     }
 }
 
-fn env_ranges(
-    env: &std::collections::HashMap<String, IVal>,
-) -> std::collections::HashMap<String, IntRange> {
-    env.iter().map(|(k, v)| (k.clone(), v.range)).collect()
-}
-
 /// Build the sequential body substitution: result name → param-only expr.
 fn body_subst_map(body: &[Assign]) -> Result<std::collections::HashMap<String, Expr>, BlastError> {
     let mut map = std::collections::HashMap::new();

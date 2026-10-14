@@ -77,10 +77,6 @@ impl Type {
             Type::Array { .. } => None,
         }
     }
-
-    pub fn is_scalar(&self) -> bool {
-        !matches!(self, Type::Array { .. })
-    }
 }
 
 impl fmt::Display for Type {
@@ -417,10 +413,6 @@ impl Spec {
         self.results.iter().position(|b| b.name == name)
     }
 
-    pub fn local_index(&self, name: &str) -> Option<usize> {
-        self.locals.iter().position(|b| b.name == name)
-    }
-
     /// Every variable in scope inside a body: parameters, then locals, then
     /// results. This ordering is the canonical layout used by proof engines.
     pub fn all_vars(&self) -> Vec<Binding> {
@@ -428,17 +420,6 @@ impl Spec {
         v.extend(self.locals.iter().cloned());
         v.extend(self.results.iter().cloned());
         v
-    }
-
-    /// Does the program need Hoare-logic obligation generation? Straight-line
-    /// scalar assignments go through the original fast path (evaluate the body
-    /// once, check the postcondition); anything with control flow or array
-    /// state goes through weakest-precondition generation.
-    pub fn has_control_flow(&self) -> bool {
-        match &self.body {
-            Some(p) => p.iter().any(stmt_needs_hoare),
-            None => false,
-        }
     }
 
     /// Total size of the input domain (product of parameter domain sizes).
@@ -481,19 +462,6 @@ pub fn input_domains(spec: &Spec) -> Vec<IntRange> {
         }
     }
     out
-}
-
-/// Does this statement (or anything nested inside it) require Hoare-logic
-/// verification rather than single-pass evaluation?
-pub fn stmt_needs_hoare(s: &Stmt) -> bool {
-    match s {
-        // Plain scalar assignment is the only thing the fast path handles.
-        Stmt::Assign { .. } => false,
-        Stmt::Assert(_) => false, // handled inline, but cheap to route here
-        Stmt::ArrayAssign { .. } => true,
-        Stmt::If { .. } => true,
-        Stmt::While { .. } => true,
-    }
 }
 
 /// Extract a straight-line program as the legacy `Vec<Assign>` form.

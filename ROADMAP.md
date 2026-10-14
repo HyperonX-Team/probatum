@@ -1,113 +1,91 @@
 # Roadmap
 
-Where `ic` is, and where it's going. Ordered by what makes proofs *more complete
-and more useful*, not by what's impressive in a demo.
+Where `ic` is, and where it's going. Ordered by what makes proofs *more
+complete and more useful*, not by what is impressive in a demo.
 
-## Now (v0.1) — shipped
+## Shipped
 
-- [x] Intent language: bounded `int[lo..hi]`, `requires`/`ensures`/`invariant`/`example`, optional body
+**v0.1 — straight-line contracts**
+- [x] Intent language: bounded `int[lo..hi]`, `requires`/`ensures`/`example`, optional body
 - [x] Reference evaluator as the single semantics
-- [x] Exhaustive engine (complete within budget)
-- [x] BDD-symbolic engine (complete within node budget), interleaved Bryant ordering
+- [x] Exhaustive engine; BDD-symbolic engine
 - [x] **Cross-validation**: independent engines must agree or we refuse to certify
-- [x] Vacuity check (refuses to "prove" an unreachable contract)
-- [x] Statistical engine with Clopper–Pearson bound — never claims proof
+- [x] Vacuity check; statistical engine that never claims proof
 - [x] SHA-256-sealed certificates; tamper detection; independent `ic verify`
-- [x] CEGIS synthesizer: definitional + piecewise extraction, typed enumeration, counterexample refinement
+- [x] CEGIS synthesizer (definitional + piecewise extraction, typed enumeration)
 - [x] Codegen: Rust, Go, DSL
-- [x] 7 bundled examples, 63 tests (unit + integration)
 
-## Next — completeness of the two engines
+**v0.2 — control flow**
+- [x] Statements: assignment, indexed write, `if`/`else`, `while`, `assert`
+- [x] Hoare-logic verification conditions: contract, entry, preservation, exit
+- [x] Termination via `decreases`, with *partial correctness* reported explicitly when absent
+- [x] Symbolic quantifiers (`forall`, `exists`, `sum`) with **symbolic bounds**
+- [x] Obligation counterexamples confirmed by the evaluator before reporting
+- [x] Free-variable restriction: an obligation quantifies only over what it mentions
 
-- [ ] **Division/modulo circuits in the bitblaster.** The BDD engine currently
-      *declines* division (honestly, never guessing). A restoring-division
-      circuit would make `safe_reciprocal`-class specs cross-validate too.
-- [ ] **`bool` parameters and results across all engines.** The language
-      accepts them; the proof engines don't yet. Small width, but it unblocks
-      flag/enum-style contracts.
-- [ ] **Model counting in reports.** `count_sat` already computes how many
-      assignments violate a contract; surface it as "0.03% of the domain is
-      bad" in `ic check` output.
-- [ ] **Incremental / parallel exhaustive engine.** Chunk the odometer across
-      threads; stop at the first violation for `VIOLATED`, or prove in
-      parallel. 10–40× on multi-core for the exhaustive path.
+**v0.3 — data**
+- [x] Fixed-size arrays and lists: indexed read/write, `len`, faulting out-of-bounds
+- [x] Symbolic array access as an ITE chain over element variables
+- [x] Read-over-write substitution, quantifier bodies included
+- [x] Text as arrays of character codes, with `forall` over positions
+- [x] Dynamic length: runtime loop bound and runtime quantifier bound
+- [x] Exact fixed-point decimals (`dec<S>`), with unit errors as type errors
+- [x] Wide ranges (2 × 10⁹ per parameter, 4 × 10¹⁸ states) via interleaved BDD ordering
 
-## Then — bigger contracts
+**v0.4 — the last declined fragment**
+- [x] Restoring-division circuits, signed and truncating toward zero
+- [x] Division-by-zero and operand faults mirrored from the evaluator
 
-- [ ] **Arrays with bounded length** and `forall`/`exists` quantifiers over
-      them. The single biggest expressiveness jump: sorting, deduplication,
-      in-place algorithms. Bitblasting arrays is the hard part (BDD size);
-      the exhaustive engine handles them first via bounded enumeration.
-- [ ] **Loops with invariants.** A loop is *intent*: `while i < n
-      invariant <expr>`. The prover checks the invariant is inductive
-      (established on entry, preserved by the body, implies the postcondition
-      on exit) — the same proof shape as the exhaustive engine's domain walk,
-      but one iteration at a time.
-- [ ] **Recursive functions with termination measures.** A `decreases` clause,
-      proven to strictly decrease on every recursive call.
-- [ ] **Unbounded integers** for a Presburger-arithmetic fragment (+, −,
-      comparisons, quantifiers) via a decision procedure, complementing the
-      bounded engines. Honest scope: multiplication of two variables is not
-      Presburger; `ic` will decline it rather than approximate.
-- [ ] **`real`/rational arithmetic** with exact semantics (no floating point
-      in the prover; floating point would need its own explicitly-specified
-      IEEE model).
+## Next
 
-## Then — better synthesis
+- [ ] **`dec × dec` with an explicit rounding mode.** Rejected today because it
+  squares the scale; the honest fix is a `rounding(nearest|floor|ceil)` clause
+  the proof can see, rather than a silent default.
+- [ ] **Nested loops with multiple invariants.** Independent invariants per
+  loop already work; the interesting case is stronger invariants needed to
+  relate an inner loop to an outer one.
+- [ ] **`bool` parameters and results across all engines.** The language accepts
+  them; the proof engines do not yet. Small width, unblocks flag-style contracts.
+- [ ] **Multiple `decreases` measures** for lexicographic termination.
+- [ ] **Whole-program verification**: a verified function's certificate becomes
+  a lemma another spec can `assume`, so trust composits instead of piling up.
+- [ ] **Model counting in reports**: `count_sat` already knows how many
+  assignments violate a contract; surface it as "0.03% of the domain is bad".
+- [ ] **Parallel exhaustive engine**: chunk the odometer across threads.
 
-- [ ] **Observational-equivalence pruning across sizes.** Currently dedup is
-      per-sort and per-round; a global signature table would prune more.
-- [ ] **Component-based synthesis** from a user-extensible library of
-      domain operators (saturating arithmetic, bit tricks, statistics
-      primitives), so specs can name intent at a higher level.
-- [ ] **CEGIS witness completion for coupled multi-result specs.** Today a
-      counterexample's valid output tuple is found by bounded enumeration over
-      the result domains (capped). A proper constraint solver would lift the cap.
-- [ ] **Synthesis hints in the spec.** `ensures` shapes the search; an optional
-      `suggest` clause would let a human point the enumerator at a family of
-      expressions without writing the body.
+## Developer surface
 
-## Then — the developer surface
+- [ ] `ic diff` — which clause a counterexample violates, in spec terms
+- [ ] LSP: live clause checking, jump-to-counterexample
+- [ ] CI action with a diffable certificate artifact (a workflow ships today)
+- [ ] More codegen targets: TypeScript, Python, Zig, C
 
-- [ ] **`ic diff`**: show which clause a counterexample violates, in spec terms.
-- [ ] **Language server (LSP)**: live clause checking, on-type synthesis
-      preview, jump-to-counterexample.
-- [ ] **CI action**: `ic check` on every PR, with a stable exit code and a
-      diffable certificate artifact.
-- [ ] **Certificate chaining across modules.** A function's certificate becomes
-      a lemma another spec can `assume` — compositional verification. The
-      trust boundary stays auditable because each certificate re-derives
-      independently.
-- [ ] **Proof-carrying codegen for more targets**: TypeScript, Python
-      (with `assert`-based backstops), Zig, C.
+## Not planned, deliberately
 
-## Not planned (and why)
-
-- **Floating-point "proofs" without a specified model.** IEEE-754 semantics are
-  subtle (rounding, NaN, signed zero). `ic` will not emit a proof whose
-  semantics it has not written down. When `real` arrives it will be exact
-  rational, not float.
-- **Proving properties of infinite domains by sampling.** Sampling is a
-  heuristic and will always be labeled as one. A statistical engine that
-  whispered "proved" would destroy the only thing worth having here.
+- **Floating point without a specified model.** IEEE-754 is subtle (rounding,
+  NaN, signed zero). `ic` will not emit a proof whose semantics it has not
+  written down. Exact fixed point covers the cases where exactness matters.
+- **Sampling that calls itself a proof.** The statistical engine exists, is
+  labelled, and always exits non-zero. A heuristic that whispered "proved"
+  would destroy the only thing worth having here.
 - **Trusting the synthesizer.** Synthesis proposes; the prover disposes. No
-  future feature will let a synthesized artifact skip the prover.
+  future feature lets a synthesized artifact skip the prover.
+- **Loops without invariants.** A loop with no invariant can only be run. `ic`
+  makes that a parse error rather than a silent downgrade.
 
 ---
 
-## Contributing / philosophy
+## Contributing
 
-The project is organized around a few rules that are worth more than any single
-feature. From [ARCHITECTURE.md](ARCHITECTURE.md#design-rules):
+The rules in [ARCHITECTURE.md](ARCHITECTURE.md#design-rules) matter more than
+any single feature:
 
 - A declined engine is never a false proof.
-- A statistical result is never labeled a proof.
+- A statistical result is never labelled a proof.
 - A vacuous precondition is never "proved".
 - On engine disagreement, refuse to certify — never pick a winner.
 - The evaluator is the only semantics; the two complete engines share no code.
-- Synthesis never trusts itself.
+- Every counterexample is confirmed by the evaluator before it is reported.
 
-The two engine bugs caught by cross-validation during development (a BDD
-cache-key truncation, a circuit-width error) are the argument for taking these
-rules seriously: they are exactly the bugs that a system without a safety net
-would have shipped.
+The four bugs the net caught during development are the argument for taking
+these seriously: they are exactly the bugs a system without a safety net ships.

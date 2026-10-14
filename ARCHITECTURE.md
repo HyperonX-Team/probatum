@@ -107,9 +107,9 @@ it has caught two real bugs (below).
 
 ## What the net caught
 
-The safety net is not theater. During development it caught two genuine bugs in
-`ic`'s own proof machinery — neither produced a false proof (the net held), but
-both would have produced confusing or wrong behavior:
+The safety net is not theater. During development it caught **four** genuine
+bugs in `ic`'s own proof machinery — none produced a false proof (the net
+held), but each would have produced confusing or wrong behaviour:
 
 1. **BDD `ite` cache-key truncation.** The memoization key for the ternary
    `ite` primitive packed its three operands into a two-slot tuple, silently
@@ -119,9 +119,21 @@ both would have produced confusing or wrong behavior:
 2. **Bitblaster circuit width.** Arithmetic circuits were sized from the
    *result's* static range alone. In a chain like `a + 1 - 1`, the intermediate
    `a+1` is wider than the final range, and `sign_extend` tripped its own
-   assertion. *Fix:* circuit width is now `max(result range, all operand widths)`.
+   assertion. *Fix:* circuit width is now `max(result range, operand widths)`.
+3. **`select()` was fault-unsound.** It OR-ed the fault signals of *both*
+   branches, so an out-of-bounds read in a branch the guard excludes still
+   leaked a fault. *Symptom:* the symbolic engine accused a **correct** program
+   of a contract violation. *Found by:* the rule that every symbolic
+   counterexample must be confirmed by the evaluator before it is reported.
+   *Fix:* the fault is selected too — lazy, mirroring the evaluator.
+4. **Array substitution skipped quantifier bodies.** `subst_array_write`
+   returned `forall`/`exists`/`sum` bodies unchanged, on the mistaken reasoning
+   that a bound variable might shadow the write's index (the type checker
+   already rejects that). *Symptom:* `forall i: r[i] == s[3-i]` kept the **old**
+   `r` after the writes to `r`, again accusing a correct program.
+   *Fix:* recurse into binders.
 
-Both are documented in the commit history and covered by regression tests.
+All four are documented in the commit history and covered by regression tests.
 
 ---
 

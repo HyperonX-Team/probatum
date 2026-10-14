@@ -2,159 +2,189 @@
 
 **You write the contract. It writes — and proves — the code.**
 
-`ic` is a compiler that turns *behavioral intent* (preconditions, postconditions,
-invariants, example witnesses) into a working program **plus a machine-checkable
-proof certificate** that the program satisfies that intent for **every** input in
-its domain — not just the ones you tested.
+`ic` turns *behavioral intent* — preconditions, postconditions, inductive loop
+invariants, quantifiers, witnesses — into a working program **plus a
+machine-checkable proof certificate** that the program satisfies that intent
+for **every** input in its domain. Not the inputs you tested. All of them.
 
 ```
-$ ic compile examples/transfer_funds.ic --emit rust,go
+$ ic check examples/sum_to_n.ic
 
-ic: proving...
-ic: verdict: PROVED
-ic:   engine exhaustive           Proved    checked=5625216
-ic:   engine bdd-symbolic         Proved    checked=134217728 nodes=17454
-ic: ✓ cross-validated: two independent complete engines agree
-ic: proved — transfer_funds in "transfer_funds-verified"
-ic:   transfer_funds.cert   transfer_funds.rs   transfer_funds.go
+spec: sum_to_n
+  engine exhaustive-execution Proved   checked=101
+  engine hoare-verification   Proved   checked=105  nodes=52771
+    4 verification condition(s): contract, loop entry/preservation/exit, and termination
+  cross-validated: two independent complete engines agree
+VERDICT: PROVED — every input satisfying `requires` meets every `ensures`
 ```
 
-That `transfer_funds` example encodes one of the oldest ideas in software —
-*"money is conserved"* — as an **invariant the prover derives**, not a test you
-hope holds:
-
-```
-spec transfer_funds(a: int[0..255], b: int[0..255], amount: int[0..255])
-  returns (x: int[0..255], y: int[0..255])
-  requires amount <= a                 // you can only send what you have
-  requires b + amount <= 255           // the ledger can hold it
-  ensures  x == a - amount             // sender debited
-  ensures  y == b + amount             // receiver credited
-  ensures  x + y == a + b              // NOTHING WAS CREATED OR DESTROYED
-  example (100, 50, 25) => (75, 75)    // a witness, checked first
-{
-  x := a - amount;
-  y := b + amount;
-}
-```
-
-No body? `ic` synthesizes one that satisfies the contract, then proves it.
-
----
-
-## Why this exists
-
-Testing shows a program works on the inputs you thought of. A **proof** shows it
-works on all of them. The gap between those two statements is where production
-incidents live.
-
-Formal-verification tools have promised this for fifty years, and they mostly
-failed developers because they demanded expertise, annotation effort, and trust
-in a black box. `ic` is built around three rules:
-
-1. **The spec is the source of truth.** Comments, formatting, file paths —
-   none of it is bound into the proof. Change the contract, the certificate
-   stops verifying. That's the point.
-2. **The verifier does not trust the compiler.** `ic verify` re-derives the
-   entire proof from the spec and checks it against the certificate. If
-   anything differs — one byte of the spec, one line of the program — it
-   refuses. Certificates are SHA-256-sealed; tampering is detected.
-3. **The prover does not trust itself.** When two independent proof engines
-   (one walks every input, one reasons symbolically about all of them at once)
-   reach a verdict, they must *agree*. If they disagree, `ic` reports an
-   internal error and refuses to certify rather than pick a winner. This isn't
-   decoration: this safety net has caught two real bugs in `ic`'s own engines
-   during development (see [ARCHITECTURE](ARCHITECTURE.md#what-the-net-caught)).
+That is a **loop** — an infinite family of executions — proved by an inductive
+invariant, cross-checked by running the loop on every input in the domain.
 
 ---
 
 ## Quick start
 
 ```console
+$ git clone <this repo> && cd intent-compiler
 $ cargo build --release
 
-# Write the bundled examples somewhere
-$ ic examples
-
-# Prove a spec that has a body; emit Rust + Go + the DSL form
-$ ic compile examples/transfer_funds.ic --emit rust,go
-
-# Synthesize (no body in the file) and prove
-$ ic compile examples/max_value.ic
-
-# Prove-or-refute without emitting anything (exit 0 = proved, 1 = violated)
-$ ic check examples/clamp.ic
-
-# Independently re-derive a certificate's proof (does NOT trust the compiler)
-$ ic verify examples/transfer_funds-verified/transfer_funds.cert \
-           examples/transfer_funds-verified/transfer_funds.ic
-
-# Show a certificate's claims
-$ ic replay examples/transfer_funds-verified/transfer_funds.cert
+$ ./target/release/ic examples          # write the 13 bundled specs
+$ ./target/release/ic check   examples/sum_to_n.ic
+$ ./target/release/ic compile examples/transfer_funds.ic --emit rust,go
+$ ./target/release/ic verify  <out>/transfer_funds.cert <out>/transfer_funds.ic
 ```
 
 Every command exits `0` on proved/verified, `1` on refuted (with a concrete
 counterexample), `2` on inconclusive or usage error — so it drops into CI.
 
-### A refuted program tells you exactly why
-
-```
-$ ic check broken.ic
-VERDICT: VIOLATED — a concrete counterexample exists:
-  input:  a=0
-  cause:  ensures #1 false: (r == (a + 1))
-```
-
-Not "some test failed" — *the input, and the clause that broke.*
+**No dependencies.** Zero external crates: the SHA-256, the CLI parsing, the
+BDD engine and the division circuits are all in this repository. A verifier you
+cannot audit is a verifier you cannot trust.
 
 ---
 
-## What "proved" means here (and what it doesn't)
+## What it can do
 
-Honesty is the product. Read this before you trust anything.
+Each of these is a real spec in [`examples/`](examples), all PROVED.
 
-**Proved means:** for every input in the declared `int[lo..hi]` domains that
-satisfies every `requires` clause, the program terminates without fault
-(division by zero, overflow, out-of-range result) and satisfies every `ensures`
-clause. The proof is complete — not statistical — whenever an engine finished.
-The engines are:
+### Loops, by inductive invariant
 
-| Engine | How | Complete? | Notes |
-|---|---|---|---|
-| `exhaustive` | Walks every input in the domain | **Yes**, if it terminates within budget | The definition of correctness by construction |
-| `bdd-symbolic` | Bit-blasts the contract to a boolean function; asks if any input reaches a "bad state" | **Yes**, within node budget | Reasons about the whole domain in one step; shares no code with exhaustive |
-| `statistical` | Random sampling + Clopper–Pearson bound | **No — never claims proof** | Labels itself `NO VIOLATION FOUND (not a proof)` and exits 2 |
+A loop is an infinite family of executions; testing it is exactly what does not
+work. `ic` requires an invariant — without one a loop could only be run, never
+proved, and it says so.
 
-- **Bounded domains are a feature, not a limitation.** A proof over
-  `int[0..255]` is a real theorem about a real range. `ic` refuses to pretend
-  its domains are infinite; what it proves, it proves completely.
-- **Division is honestly declined by the BDD engine** (no circuit implemented
-  yet — see [ROADMAP](ROADMAP.md)); the exhaustive engine handles it. A
-  declined engine is never a false proof.
-- **A precondition that can never be true makes every contract vacuously true.**
-  `ic` checks for this and *refuses to certify*: "proved nothing" is not "proved
-  everything".
-- **The generated Rust/Go guards are a backstop, not the proof.** The proof is
-  the certificate. Guards catch drift if someone calls the function outside its
-  verified envelope.
+```
+while i <= n
+  invariant acc == sum(k in 0..i - 1: k)   // symbolic bound: the whole point
+  decreases n - i + 1                      // and this proves termination
+{ acc := acc + i; i := i + 1; }
+```
+
+Three obligations are generated and discharged: the invariant holds on entry,
+is preserved by every iteration, and implies the postcondition when the guard
+fails. A fourth proves termination. Without `decreases`, `ic` reports **partial
+correctness explicitly** rather than quietly proving the weaker thing.
+
+### Arrays and lists
+
+An array is not a special theory: it is exactly *N* integer variables, and
+`a[i]` with a **symbolic** `i` compiles to an ITE chain over them. That is exact
+for fixed-size arrays — which is what makes array reasoning decidable instead
+of approximate.
+
+**Out-of-bounds indexing is a fault, not a silent default.** The classic buffer
+bug becomes a proof obligation.
+
+### Dynamic length
+
+The array has a fixed capacity; the *used* length is a runtime value. The loop
+runs `n` times and the quantifier bound is a variable — no separate feature
+was needed, because `sum(k in 0..n-1: a[k])` already means what it says.
+
+### Text
+
+A string is an array of character codes. Not a trick — that is what a string
+is, so every string property is an array property, checked by the same
+machinery, and the contract quantifies over **all** positions at once:
+
+```
+ensures forall i in 0..3: r[i] == s[3 - i]
+```
+
+### Exact decimals (money)
+
+`dec<2>` is fixed point: the value is `stored / 10^2`. Unlike binary floating
+point this is **exact** — every value is a rational with denominator 100, so
+the prover reasons about it with no IEEE-754 model anywhere.
+
+The type system refuses unit errors: comparing money to a bare integer is
+rejected, and `dec * dec` is rejected because it would square the scale.
+
+### Large ranges
+
+Two billion values per parameter, 4 × 10¹⁸ states: the enumerating engine
+declines *with a reason*, and the symbolic engine proves the contract over all
+of them with a 153k-node BDD. Interleaved (Bryant) variable ordering is what
+makes wide arithmetic tractable — it took `transfer_funds` from "budget
+exceeded at 5M nodes" to 17k nodes.
+
+### And the original: straight-line contracts
+
+Ledger transfers with a **derived** conservation invariant
+(`x + y == a + b` is not stated in the body — the prover derives it), clamping,
+saturating arithmetic, safe division, threshold logic.
 
 ---
 
-## The spec language, in one screen
+## Why you can believe the certificates
 
-```
-spec name(a: int[0..255], b: int[0..9])      // bounded integer parameters
-  returns (x: int[0..255])                    // result, with its own domain
-  requires a > b                              // precondition (inputs outside: out of domain)
-  ensures  x == a - b                         // postcondition — must hold for ALL valid inputs
-  ensures  x + b == a                         // an invariant reads the same way
-  example (10, 3) => (7)                      // a concrete witness (checked FIRST)
-{ x := a - b; }                               // the program — omit it and ic writes one
-```
+Three rules, enforced in code, and they are the whole point:
 
-Expressions: `+ - * / %`, comparisons, `&& || !`, `if c then a else b`,
-`min(a,b)`, `max(a,b)`. Full reference in
-[SPEC.md](SPEC.md).
+**1. Two independent engines must agree.** One walks every input and executes
+the program. The other bit-blasts the contract into a boolean function and
+reasons about the entire domain at once. They share no code — only
+[`eval.rs`](src/eval.rs) as their common specification. If they disagree, `ic`
+reports an internal error and **refuses to certify** rather than picking a
+winner.
+
+**2. Every counterexample is confirmed by the evaluator** before it is
+reported — by *both* paths. A symbolically-encoded bug cannot become a bogus
+accusation against your program.
+
+**3. Honest limits are reported, never hidden.** A declined engine is never a
+false proof. A sampling result is never called a proof. A vacuously-true
+precondition is refused instead of "proved".
+
+### This is not decoration
+
+The safety net caught **four** real bugs in `ic`'s own proof machinery during
+development. None produced a false proof; the net held.
+
+| Bug | Symptom | Found by |
+|---|---|---|
+| BDD `ite` cache key truncated an operand | engines disagreed on a correct program | cross-validation |
+| Circuits sized from the result range only | `sign_extend` assertion on `a+1-1` | integration test |
+| `select()` OR-ed both branches' fault signals | a guarded-out out-of-bounds read accused a correct program | counterexample confirmation |
+| array substitution skipped quantifier bodies | `forall i: r[i]==…` kept the **old** `r` | a failing spec |
+
+`ic verify` re-derives the proof from the spec alone and byte-compares against
+the certificate. An integration test tampers with one character and asserts
+rejection.
+
+---
+
+## The engine ladder
+
+| Engine | How | Complete? |
+|---|---|---|
+| `exhaustive-execution` | Runs the real machine — loops, arrays and all — on every input | **Yes**, within budget |
+| `bdd-symbolic` | Bit-blasts to a boolean function; UNSAT bad-state = proof over the whole domain | **Yes**, within node budget |
+| `hoare-verification` | Generates and discharges verification conditions for control flow | **Yes**, within budget |
+| `statistical` | Sampling + Clopper–Pearson bound | **No — never claims proof** |
+
+---
+
+## Honest limits
+
+Read these before trusting anything.
+
+- **`dec × dec` is rejected by design.** Multiplying two scaled values squares
+  the scale; a silent rounding rule would be a lie. Multiply by a plain int, or
+  scale explicitly.
+- **Comparing money to a bare integer is a type error** (except `0`, which is
+  scale-invariant). `balance >= 5` is ambiguous — five what?
+- **Division by wide operands can exhaust the BDD budget.** Restoring-division
+  circuits exist and `safe_reciprocal` cross-validates; at 17-bit operands the
+  symbolic engine declines honestly and enumeration finishes the job. Division
+  is inherently expensive for BDDs — reported, not hidden.
+- **Arrays are fixed capacity.** "Dynamic" means the used length is a runtime
+  value, not that the array grows.
+- **`bool` parameters aren't handled by the proof engines yet** (literals and
+  expressions are).
+- **No loops without invariants, no recursion, no heap.** Each is a deliberate
+  boundary: the fragment is chosen so the engines can be *complete* over it
+  rather than approximate over something larger.
 
 ---
 
@@ -162,46 +192,40 @@ Expressions: `+ - * / %`, comparisons, `&& || !`, `if c then a else b`,
 
 | File | What it is |
 |---|---|
-| [`src/lexer.rs`](src/lexer.rs) · [`parser.rs`](src/parser.rs) · [`sema.rs`](src/sema.rs) | Frontend: source → typed AST, with name resolution and static checks |
 | [`src/eval.rs`](src/eval.rs) | **The reference evaluator — the single definition of what intent means.** Every engine agrees with it or is wrong. |
-| [`src/bdd.rs`](src/bdd.rs) | Reduced Ordered BDDs (unique table, computed cache, `ite` primitive, model counting) |
-| [`src/bitblast.rs`](src/bitblast.rs) | Two's-complement circuits: adders, comparators, lazy-`ite` fault mirroring |
-| [`src/prove.rs`](src/prove.rs) | The prover: engine ladder, **cross-validation**, vacuity check, certificates |
-| [`src/synth.rs`](src/synth.rs) | CEGIS synthesizer: definitional + piecewise extraction, typed enumerative search, counterexample-guided refinement |
-| [`src/codegen.rs`](src/codegen.rs) | Emitters: verified program → Rust / Go / DSL |
-| [`src/main.rs`](src/main.rs) | The `ic` CLI |
-| [`examples/`](examples) | 7 runnable specs, from money conservation to a majority-vote circuit |
-| [`tests/integration.rs`](tests/integration.rs) | The acceptance criteria, executed: prove-all, cert roundtrip, tamper detection, standalone-rustc compile, honesty checks |
+| [`src/hoare.rs`](src/hoare.rs) | Verification-condition generation: contract, loop entry/preservation/exit, termination |
+| [`src/bdd.rs`](src/bdd.rs) | Reduced Ordered BDDs: unique table, computed cache, `ite`, model counting |
+| [`src/bitblast.rs`](src/bitblast.rs) | Circuits: adders, comparators, multipliers, **restoring division**, ITE-chain array access, exact quantifier unrolling |
+| [`src/prove.rs`](src/prove.rs) | The prover: engine ladder, cross-validation, vacuity check, certificates |
+| [`src/synth.rs`](src/synth.rs) | CEGIS synthesizer: definitional + piecewise extraction, typed enumeration, counterexample refinement |
+| [`src/sha256.rs`](src/sha256.rs) | Hand-written SHA-256, FIPS-180-4 test vectors |
+| [`SPEC.md`](SPEC.md) | The language reference |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How it fits together, and the trust boundary |
+| [`ROADMAP.md`](ROADMAP.md) | Where it goes next — and what is deliberately not planned |
 
-Zero external dependencies — the SHA-256, the CLI parsing, the proof engines
-are all here. A verifier you cannot audit is a verifier you cannot trust.
+**9,674 lines of Rust · 65 tests · 13 examples · 0 dependencies**
 
 ```
-63 tests green.  // 56 unit + 7 integration
+$ cargo test --release
+test result: ok. 56 passed; 0 failed
+test result: ok. 9 passed; 0 failed
 ```
 
 ---
 
-## The story of the two bugs
+## The whole example set
 
-The strongest thing about `ic` isn't that its engines are right — it's that
-they *check each other*, and that when they disagree, the tool refuses to
-certify instead of guessing. That policy caught two genuine bugs in `ic`'s own
-proof machinery:
-
-1. **A BDD cache-key bug.** The memoization key for the `ite` primitive
-   truncated one of its three operands, so different `ite` nodes could collide
-   and return the wrong subgraph. Caught because the exhaustive engine said
-   `Proved` and the BDD engine said `Violated` — a disagreement. Fixed with a
-   proper key; never recurred.
-2. **A circuit-width bug.** The bitblaster sized arithmetic circuits from the
-   *result's* static range alone. In a chain like `a + 1 - 1`, an intermediate
-   is wider than the final range, and the circuit tripped its own assertion.
-   Caught in integration testing. Fixed: circuits are now at least as wide as
-   their widest operand.
-
-Neither would have produced a false proof — the net held. But both would have
-produced confusing behavior. The net is why you can believe the certificates.
+| Spec | Capability | Evidence |
+|---|---|---|
+| `transfer_funds` | conservation invariant, derived | 5,625,216 inputs, cross-validated |
+| `sum_to_n` | loop + invariant + termination | 4 VCs, symbolic bounds |
+| `array_sum` | array slice invariant | 4,084,101 array contents |
+| `dyn_length` | runtime length | 600,000 inputs, `n` symbolic |
+| `reverse_text` | `forall` over string positions | 456,976 inputs |
+| `split_bill` | exact decimals | 10,000,100 inputs |
+| `big_range` | 4 × 10¹⁸ states | 153,601 BDD nodes |
+| `safe_reciprocal` | division, cross-validated | 1,051,638 BDD nodes |
+| `clamp`, `max_value`, `saturating_sub`, `weighted_sum`, `consensus` | synthesized from intent | CEGIS |
 
 ---
 

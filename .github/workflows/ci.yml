@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build, test, and prove every example
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (no dependencies to install)
+        run: cargo build --release
+
+      # 65 tests: unit tests for every module, plus integration tests that
+      # verify all 13 bundled examples end to end, tamper with a certificate
+      # and assert rejection, compile the emitted Rust with rustc, and check
+      # that simple sampling never claims to be a proof.
+      - name: Test
+        run: cargo test --release
+
+      - name: Prove every example (explicit, readable log)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=./target/release/ic
+          if [ ! -x "$BIN" ]; then BIN=./target/release/ic.exe; fi
+          mkdir -p ci-out
+          "$BIN" examples ci-specs
+          for f in ci-specs/*.ic; do
+            echo "=== $f ==="
+            "$BIN" compile "$f" --emit rust,go,dsl --out ci-out
+          done
+
+      # The emitted Rust must actually compile. This is the difference
+      # between "generates code-shaped text" and "generates code".
+      - name: Emitted Rust compiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          for rs in ci-out/*.rs; do
+            echo "=== $rs ==="
+            rustc --crate-type lib --edition 2021 "$rs" -o /dev/null 2>&1 || \
+              rustc --crate-type lib --edition 2021 "$rs"
+          done
+
+      - name: Independent verification of every certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=./target/release/ic
+          if [ ! -x "$BIN" ]; then BIN=./target/release/ic.exe; fi
+          for cert in ci-out/*.cert; do
+            name=$(basename "$cert" .cert)
+            "$BIN" verify "$cert" "ci-out/$name.ic"
+          done

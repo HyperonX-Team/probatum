@@ -2,4 +2,6 @@
 /build
 /final
 /probe
+*.rlib
+*.txt
 **/*.rs.bk

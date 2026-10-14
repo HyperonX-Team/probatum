@@ -170,6 +170,33 @@ rejection.
 
 ---
 
+## How this differs from the established tools
+
+The honest answer is "a much smaller fragment, verified more completely".
+
+| | probatum | Dafny | Verus | Kani | Lean 4 |
+|---|---|---|---|---|---|
+| **What you write** | intent: preconditions, invariants, examples; the body is optional | annotated imperative programs | annotated Rust | Rust + assertions | proofs about definitions |
+| **Decision procedure** | own BDD engines — **no external solver** | SMT (Z3) | SMT (Z3) | bounded model checking (CBMC) | kernel-checked terms |
+| **Can it say "unknown"?** | no — within the fragment, both engines must decide | yes (solver timeout) | yes | yes (unwinding bound) | no, but proofs are manual |
+| **Synthesizes code?** | yes, from the contract (CEGIS) | no | no | no | no |
+| **Loops** | inductive invariant, verified | invariant, verified | invariant, verified | **unrolled** to a bound | not applicable |
+| **Unbounded integers / recursion / heap** | **no** — bounded domains only | yes | yes, real Rust | yes, in the model | yes |
+| **Dependencies** | **zero** | Z3, compiler stack | Z3, rustc internals | CBMC, rustc | toolchain |
+| **Audit surface** | ~9k lines you can read in an evening | large | large | large | large |
+
+**When to reach for something else:** you need unbounded integers, recursion,
+dynamic allocation, or an existing annotated codebase. Dafny and Verus are
+mature, backed by research groups, and handle far more programs than this does.
+
+**When probatum is the right tool:** the property is arithmetic or
+control-flow over *bounded* values — money that must be conserved, a rate
+limiter's boundary, a clamp, a counter, an array slice — and you want a
+complete answer with no solver that can shrug. Bounded isn't a limitation
+here, it's the reason the answer is definitive.
+
+---
+
 ## The engine ladder
 
 | Engine | How | Complete? |

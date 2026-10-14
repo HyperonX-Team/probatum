@@ -25,21 +25,18 @@
 //!   probatum examples [DIR]
 //!       Write the bundled example specs to DIR (default: ./examples).
 
-mod ast;
-mod bdd;
-mod bitblast;
-mod codegen;
-mod eval;
-mod hoare;
-mod lexer;
-mod parser;
-mod prove;
-mod sema;
-mod sha256;
-mod synth;
-
-use ast::{Program, Spec};
-use prove::{Certificate, ProverOptions, Verdict};
+// The verifier itself lives in the library; this binary is a thin CLI over
+// it. One source of truth: the same modules the WebAssembly playground and
+// any embedder compile.
+use probatum::ast;
+use probatum::codegen;
+use probatum::parser;
+use probatum::prove;
+use probatum::sema;
+use probatum::sha256;
+use probatum::synth;
+use probatum::ast::{Program, Spec};
+use probatum::prove::{Certificate, ProverOptions, Verdict};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

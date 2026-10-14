@@ -25,6 +25,13 @@ include = [
 # SHA-256, CLI parsing, the proof engines — is implemented here.
 [dependencies]
 
+[lib]
+name = "probatum"
+path = "src/lib.rs"
+# rlib for the CLI and for anyone who wants to embed the verifier; cdylib so the
+# same source compiles to a .wasm module for the browser playground.
+crate-type = ["rlib", "cdylib"]
+
 [[bin]]
 name = "probatum"
 path = "src/main.rs"

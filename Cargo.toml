@@ -2,9 +2,23 @@
 name = "probatum"
 version = "0.1.0"
 edition = "2021"
-description = "probatum — an intent compiler: write the contract, get the proof"
+description = "Write the contract, get the proof: compile behavioral intent into programs with machine-checkable proof certificates"
 license = "MIT"
-authors = ["Intent Compiler contributors"]
+repository = "https://github.com/HyperonX-Team/probatum"
+readme = "README.md"
+keywords = ["formal-verification", "verification", "proof", "static-analysis", "compilers"]
+categories = ["development-tools", "command-line-utilities", "compilers"]
+authors = ["HyperonX-Team"]
+include = [
+    "src/**/*.rs",
+    "examples/**/*.ic",
+    "Cargo.toml",
+    "README.md",
+    "SPEC.md",
+    "ARCHITECTURE.md",
+    "ROADMAP.md",
+    "LICENSE",
+]
 
 # Zero external dependencies by design:
 # a verifier must be self-contained and auditable. Everything —

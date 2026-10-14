@@ -50,7 +50,7 @@ cannot audit is a verifier you cannot trust.
 
 ## What it can do
 
-Each of these is a real spec in [`examples/`](examples), all PROVED.
+Each of these is a real spec in [`examples/`(https://github.com/HyperonX-Team/probatum/tree/main/examples), all PROVED.
 
 ### Loops, by inductive invariant
 
@@ -128,7 +128,7 @@ Three rules, enforced in code, and they are the whole point:
 **1. Two independent engines must agree.** One walks every input and executes
 the program. The other bit-blasts the contract into a boolean function and
 reasons about the entire domain at once. They share no code — only
-[`eval.rs`](src/eval.rs) as their common specification. If they disagree, `probatum`
+[`eval.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/eval.rs) as their common specification. If they disagree, `probatum`
 reports an internal error and **refuses to certify** rather than picking a
 winner.
 
@@ -196,16 +196,16 @@ Read these before trusting anything.
 
 | File | What it is |
 |---|---|
-| [`src/eval.rs`](src/eval.rs) | **The reference evaluator — the single definition of what intent means.** Every engine agrees with it or is wrong. |
-| [`src/hoare.rs`](src/hoare.rs) | Verification-condition generation: contract, loop entry/preservation/exit, termination |
-| [`src/bdd.rs`](src/bdd.rs) | Reduced Ordered BDDs: unique table, computed cache, `ite`, model counting |
-| [`src/bitblast.rs`](src/bitblast.rs) | Circuits: adders, comparators, multipliers, **restoring division**, ITE-chain array access, exact quantifier unrolling |
-| [`src/prove.rs`](src/prove.rs) | The prover: engine ladder, cross-validation, vacuity check, certificates |
-| [`src/synth.rs`](src/synth.rs) | CEGIS synthesizer: definitional + piecewise extraction, typed enumeration, counterexample refinement |
-| [`src/sha256.rs`](src/sha256.rs) | Hand-written SHA-256, FIPS-180-4 test vectors |
-| [`SPEC.md`](SPEC.md) | The language reference |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How it fits together, and the trust boundary |
-| [`ROADMAP.md`](ROADMAP.md) | Where it goes next — and what is deliberately not planned |
+| [`src/eval.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/eval.rs) | **The reference evaluator — the single definition of what intent means.** Every engine agrees with it or is wrong. |
+| [`src/hoare.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/hoare.rs) | Verification-condition generation: contract, loop entry/preservation/exit, termination |
+| [`src/bdd.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/bdd.rs) | Reduced Ordered BDDs: unique table, computed cache, `ite`, model counting |
+| [`src/bitblast.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/bitblast.rs) | Circuits: adders, comparators, multipliers, **restoring division**, ITE-chain array access, exact quantifier unrolling |
+| [`src/prove.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/prove.rs) | The prover: engine ladder, cross-validation, vacuity check, certificates |
+| [`src/synth.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/synth.rs) | CEGIS synthesizer: definitional + piecewise extraction, typed enumeration, counterexample refinement |
+| [`src/sha256.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/sha256.rs) | Hand-written SHA-256, FIPS-180-4 test vectors |
+| [`SPEC.md`(https://github.com/HyperonX-Team/probatum/blob/main/SPEC.md) | The language reference |
+| [`ARCHITECTURE.md`(https://github.com/HyperonX-Team/probatum/blob/main/ARCHITECTURE.md) | How it fits together, and the trust boundary |
+| [`ROADMAP.md`(https://github.com/HyperonX-Team/probatum/blob/main/ROADMAP.md) | Where it goes next — and what is deliberately not planned |
 
 **9,674 lines of Rust · 65 tests · 13 examples · 0 dependencies**
 
@@ -235,4 +235,4 @@ test result: ok. 9 passed; 0 failed
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE(https://github.com/HyperonX-Team/probatum/blob/main/LICENSE).

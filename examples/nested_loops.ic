@@ -1,0 +1,40 @@
+// Nested loops.
+//
+// This example exists because the inner loop's obligations are generated
+// *inside* the outer loop's, and the naive weakest-precondition rule forgets
+// what the outer loop established. At the inner loop's exit, the post
+// condition is the rest of the outer body — `(c + 1) == (i + 1)` here — which
+// mentions only variables the inner loop never writes. Without the frame, that
+// obligation is unprovable for a correct program and the engines disagree:
+// exhaustive execution runs it and proves it, the symbolic path refuses.
+//
+// What makes it provable is the frame rule: a fact is carried to a program
+// point only while nothing in the prefix writes one of its variables. So
+// `c == i` (from the outer invariant) survives to the inner loop's exit, and
+// the termination variant `(n - i) + 1` survives too.
+spec nested_loops(n: int[0..4])
+  returns (s: int[0..10])
+  locals (i: int[0..5], j: int[0..5], c: int[0..10])
+  ensures s == n + 1
+  example (0) => (1)
+  example (3) => (4)
+{
+  i := 0;
+  c := 0;
+  while i <= n
+    invariant c == i
+    invariant i >= 0
+    invariant i <= n + 1
+    decreases n - i + 1
+  {
+    j := 0;
+    while j <= n
+      invariant j >= 0
+      invariant j <= n + 1
+      decreases n - j + 1
+    { j := j + 1; }
+    c := c + 1;
+    i := i + 1;
+  }
+  s := c;
+}

@@ -311,15 +311,58 @@ impl<'a> VcGen<'a> {
 
     /// Weakest precondition of a statement block with respect to `post`.
     pub fn wp_block(&mut self, prog: &[Stmt], post: Expr) -> Expr {
+        self.wp_block_ctx(prog, post, &[])
+    }
+
+    /// The same, given the facts that hold where the block starts.
+    ///
+    /// This is the frame rule, and it is what makes NESTED loops provable.
+    /// Without it an inner loop's exit obligation sees only the inner
+    /// invariant:
+    ///
+    /// ```text
+    ///   { j >= 0, j <= n + 1, !(j <= n) }  =>  (c + 1) == (i + 1)
+    /// ```
+    ///
+    /// where `c == i` came from the OUTER loop and the inner body touches
+    /// neither variable — so the obligation is unprovable and the engines
+    /// disagree (the exhaustive one runs the real program and proves it).
+    /// The textbook answer is "strengthen the inner invariant"; what working
+    /// verifiers do is carry the frame.
+    ///
+    /// Each fact is carried only while no statement in the *prefix* writes one
+    /// of its variables — that is exactly when it is still true. Computing the
+    /// prefix write-set once, before the backward walk, keeps this sound: a
+    /// fact is dropped the moment anything before this point could have
+    /// invalidated it.
+    fn wp_block_ctx(&mut self, prog: &[Stmt], post: Expr, ctx: &[Expr]) -> Expr {
+        // mods[i] = every variable written by prog[0..i].
+        let mut mods: Vec<std::collections::HashSet<String>> =
+            Vec::with_capacity(prog.len() + 1);
+        let mut cur: std::collections::HashSet<String> = std::collections::HashSet::new();
+        mods.push(cur.clone());
+        for s in prog {
+            stmt_writes(s, &mut cur);
+            mods.push(cur.clone());
+        }
+
         let mut q = post;
-        // Backwards: the last statement's wp is applied first.
-        for s in prog.iter().rev() {
-            q = self.wp_stmt(s, q);
+        for i in (0..prog.len()).rev() {
+            let live: Vec<Expr> = ctx
+                .iter()
+                .filter(|f| {
+                    let mut fv = std::collections::HashSet::new();
+                    free_vars(f, &mut fv);
+                    fv.iter().all(|v| !mods[i].contains(v))
+                })
+                .cloned()
+                .collect();
+            q = self.wp_stmt_ctx(&prog[i], q, &live);
         }
         q
     }
 
-    fn wp_stmt(&mut self, s: &Stmt, post: Expr) -> Expr {
+    fn wp_stmt_ctx(&mut self, s: &Stmt, post: Expr, ctx: &[Expr]) -> Expr {
         match s {
             Stmt::Assign { name, value } => subst_var(&post, name, value),
 
@@ -334,8 +377,8 @@ impl<'a> VcGen<'a> {
                 then_body,
                 else_body,
             } => {
-                let wp_then = self.wp_block(then_body, post.clone());
-                let wp_else = self.wp_block(else_body, post);
+                let wp_then = self.wp_block_ctx(then_body, post.clone(), ctx);
+                let wp_else = self.wp_block_ctx(else_body, post, ctx);
                 // ite(cond, wp_then, wp_else)
                 Expr::Ite(
                     Box::new(cond.clone()),
@@ -358,49 +401,143 @@ impl<'a> VcGen<'a> {
                 let inv = conjoin(invariants.clone());
                 let loc = format!("while {} ", cond);
 
-                // (1) Preservation: I ∧ guard ⇒ wp(body, I)
-                let wp_body_inv = self.wp_block(body, inv.clone());
+                // What is known when this guard is tested: the frame from the
+                // enclosing scope, plus this loop's own invariant and guard.
+                // For a loop at the top level the frame is empty and the three
+                // obligations below are byte-for-byte what they were before.
+                let mut exit_ctx: Vec<Expr> = ctx.to_vec();
+                let mut guarded: Vec<Expr> = ctx.to_vec();
+                guarded.push(inv.clone());
+                guarded.push(cond.clone());
+
+                // (1) Preservation: frame ∧ I ∧ guard ⇒ wp(body, I)
+                let wp_body_inv = self.wp_block_ctx(body, inv.clone(), &guarded);
                 self.push(
                     "loop preservation",
                     loc.clone(),
-                    vec![inv.clone(), cond.clone()],
+                    guarded.clone(),
                     wp_body_inv,
                 );
 
-                // (2) Exit: I ∧ ¬guard ⇒ post
+                // (2) Exit: frame ∧ I ∧ ¬guard ⇒ post.
+                //     The frame is the whole point of this clause: after an
+                //     INNER loop, `post` is the remainder of the OUTER body,
+                //     which typically mentions only variables this loop never
+                //     touched. Without them the exit obligation is unprovable
+                //     even for a correct program.
                 let not_guard = Expr::Unary(UnOp::Not, Box::new(cond.clone()));
-                self.push(
-                    "loop exit",
-                    loc.clone(),
-                    vec![inv.clone(), not_guard.clone()],
-                    post,
-                );
+                exit_ctx.push(inv.clone());
+                exit_ctx.push(not_guard);
+                self.push("loop exit", loc.clone(), exit_ctx, post);
 
                 // (3) Termination, when a variant is given:
-                //     I ∧ guard ⇒ decreases > 0 ∧ wp(body, decreases) < decreases
+                //     frame ∧ I ∧ guard ⇒ decreases > 0 ∧ variant_after_body < decreases
+                //
+                // `variant_after` substitutes through the body like the real
+                // execution would. A second full `wp` walk would be wrong here
+                // for two different reasons, both hit in development: it emits
+                // a nested loop's exit obligation with the *variant itself* as
+                // its post (asking an inner-loop exit to have already reached
+                // the post-body value of a number still being computed), and
+                // the loop rule returns only the invariant, so the variant
+                // would decay to the inner loop's invariant instead of
+                // `(n - (i + 1)) + 1`.
                 if let Some(d) = decreases {
-                    let after = self.wp_block(body, d.clone());
-                    let positive = Expr::Binary(
-                        BinOp::Gt,
-                        Box::new(d.clone()),
-                        Box::new(Expr::IntLit(0)),
-                    );
+                    let after = variant_after(body, &d);
                     let decreased = Expr::Binary(
                         BinOp::Lt,
                         Box::new(after),
                         Box::new(d.clone()),
                     );
+                    let positive = Expr::Binary(
+                        BinOp::Gt,
+                        Box::new(d.clone()),
+                        Box::new(Expr::IntLit(0)),
+                    );
                     self.push(
                         "loop termination",
                         loc.clone(),
-                        vec![inv.clone(), cond.clone()],
+                        guarded,
                         Expr::Binary(BinOp::And, Box::new(positive), Box::new(decreased)),
                     );
                 }
 
                 // The predicate that survives the loop is the invariant; the
-                // two obligations above are what license discarding ¬guard.
+                // obligations above are what license discarding ¬guard.
                 inv
+            }
+        }
+    }
+}
+
+/// How `d` reads after one execution of `body`.
+///
+/// Substitutes forward, in execution order. Under the standard loop rule a
+/// nested loop is opaque — only its invariant survives — which is useless for
+/// a variant such as `(n - i) + 1` that the inner loop never touches: the
+/// variant decays to the inner loop's invariant and termination becomes
+/// unprovable for a perfectly correct program. So a loop that writes none of
+/// the variant's variables is treated as the identity on it — that is exactly
+/// what the frame rule buys — and falls back to the invariant only when the
+/// loop genuinely can change the variant.
+fn variant_after(body: &[Stmt], d: &Expr) -> Expr {
+    let mut q = d.clone();
+    for s in body {
+        match s {
+            Stmt::Assign { name, value } => q = subst_var(&q, name, value),
+            Stmt::ArrayAssign { array, index, value } => {
+                q = subst_array_write(&q, array, index, value)
+            }
+            Stmt::Assert(_) => {}
+            Stmt::If { cond, then_body, else_body } => {
+                let t = variant_after(then_body, &q);
+                let e = variant_after(else_body, &q);
+                q = Expr::Ite(Box::new(cond.clone()), Box::new(t), Box::new(e));
+            }
+            Stmt::While { invariants, .. } => {
+                let mut writes = std::collections::HashSet::new();
+                stmt_writes(s, &mut writes);
+                let mut fv = std::collections::HashSet::new();
+                free_vars(&q, &mut fv);
+                if !fv.iter().all(|v| !writes.contains(v)) {
+                    q = conjoin(invariants.clone());
+                }
+                // else: frame — the loop cannot move the variant, so it stays.
+            }
+        }
+    }
+    q
+}
+
+/// Every variable this statement writes, walking into branches and loop bodies.
+///
+/// Used by `wp_block_ctx` to keep a frame fact only while nothing could have
+/// invalidated it: `c == i` may be assumed before a statement that writes `c`
+/// and never after it.
+fn stmt_writes(s: &Stmt, out: &mut std::collections::HashSet<String>) {
+    match s {
+        Stmt::Assign { name, .. } => {
+            out.insert(name.clone());
+        }
+        Stmt::ArrayAssign { array, .. } => {
+            out.insert(array.clone());
+        }
+        Stmt::Assert(_) => {}
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                stmt_writes(s, out);
+            }
+            for s in else_body {
+                stmt_writes(s, out);
+            }
+        }
+        Stmt::While { body, .. } => {
+            for s in body {
+                stmt_writes(s, out);
             }
         }
     }

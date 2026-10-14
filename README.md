@@ -62,7 +62,16 @@ cannot audit is a verifier you cannot trust.
 
 ## What it can do
 
-Each of these is a real spec in [`examples/`(https://github.com/HyperonX-Team/probatum/tree/main/examples), all PROVED.
+**Loops, including nested ones.** Every loop needs an inductive invariant and,
+for termination, a decreases variant. Nested loops work the way they have to:
+the inner loop's obligations are generated *inside* the outer loop's, and the
+frame — the facts the outer loop established that the inner body never writes —
+is carried through. Without it, the inner loop's exit obligation forgets
+c == i and is unprovable even for a correct program, and the two engines
+disagree. The frame is kept exactly as long as no statement in the prefix
+writes one of its variables.
+
+Each of these is a real spec in [`examples/`](https://github.com/HyperonX-Team/probatum/tree/main/examples), all PROVED.
 
 ### Loops, by inductive invariant
 
@@ -140,7 +149,7 @@ Three rules, enforced in code, and they are the whole point:
 **1. Two independent engines must agree.** One walks every input and executes
 the program. The other bit-blasts the contract into a boolean function and
 reasons about the entire domain at once. They share no code — only
-[`eval.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/eval.rs) as their common specification. If they disagree, `probatum`
+[`eval.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/eval.rs) as their common specification. If they disagree, `probatum`
 reports an internal error and **refuses to certify** rather than picking a
 winner.
 
@@ -235,18 +244,18 @@ Read these before trusting anything.
 
 | File | What it is |
 |---|---|
-| [`src/eval.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/eval.rs) | **The reference evaluator — the single definition of what intent means.** Every engine agrees with it or is wrong. |
-| [`src/hoare.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/hoare.rs) | Verification-condition generation: contract, loop entry/preservation/exit, termination |
-| [`src/bdd.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/bdd.rs) | Reduced Ordered BDDs: unique table, computed cache, `ite`, model counting |
-| [`src/bitblast.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/bitblast.rs) | Circuits: adders, comparators, multipliers, **restoring division**, ITE-chain array access, exact quantifier unrolling |
-| [`src/prove.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/prove.rs) | The prover: engine ladder, cross-validation, vacuity check, certificates |
-| [`src/synth.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/synth.rs) | CEGIS synthesizer: definitional + piecewise extraction, typed enumeration, counterexample refinement |
-| [`src/sha256.rs`(https://github.com/HyperonX-Team/probatum/blob/main/src/sha256.rs) | Hand-written SHA-256, FIPS-180-4 test vectors |
-| [`SPEC.md`(https://github.com/HyperonX-Team/probatum/blob/main/SPEC.md) | The language reference |
-| [`ARCHITECTURE.md`(https://github.com/HyperonX-Team/probatum/blob/main/ARCHITECTURE.md) | How it fits together, and the trust boundary |
-| [`ROADMAP.md`(https://github.com/HyperonX-Team/probatum/blob/main/ROADMAP.md) | Where it goes next — and what is deliberately not planned |
+| [`src/eval.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/eval.rs) | **The reference evaluator — the single definition of what intent means.** Every engine agrees with it or is wrong. |
+| [`src/hoare.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/hoare.rs) | Verification-condition generation: contract, loop entry/preservation/exit, termination |
+| [`src/bdd.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/bdd.rs) | Reduced Ordered BDDs: unique table, computed cache, `ite`, model counting |
+| [`src/bitblast.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/bitblast.rs) | Circuits: adders, comparators, multipliers, **restoring division**, ITE-chain array access, exact quantifier unrolling |
+| [`src/prove.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/prove.rs) | The prover: engine ladder, cross-validation, vacuity check, certificates |
+| [`src/synth.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/synth.rs) | CEGIS synthesizer: definitional + piecewise extraction, typed enumeration, counterexample refinement |
+| [`src/sha256.rs`](https://github.com/HyperonX-Team/probatum/blob/main/src/sha256.rs) | Hand-written SHA-256, FIPS-180-4 test vectors |
+| [`SPEC.md`](https://github.com/HyperonX-Team/probatum/blob/main/SPEC.md) | The language reference |
+| [`ARCHITECTURE.md`](https://github.com/HyperonX-Team/probatum/blob/main/ARCHITECTURE.md) | How it fits together, and the trust boundary |
+| [`ROADMAP.md`](https://github.com/HyperonX-Team/probatum/blob/main/ROADMAP.md) | Where it goes next — and what is deliberately not planned |
 
-**10524 lines of Rust · 66 tests · 13 examples · 0 dependencies**
+**10524 lines of Rust · 66 tests · 14 examples · 0 dependencies**
 
 ```
 $ cargo test --release
@@ -262,6 +271,7 @@ test result: ok. 9 passed; 0 failed
 |---|---|---|
 | `transfer_funds` | conservation invariant, derived | 5,625,216 inputs, cross-validated |
 | `sum_to_n` | loop + invariant + termination | 4 VCs, symbolic bounds |
+| `nested_loops` | nested loops — the frame rule | inner exit VC sees the outer invariant |
 | `array_sum` | array slice invariant | 4,084,101 array contents |
 | `dyn_length` | runtime length | 600,000 inputs, `n` symbolic |
 | `reverse_text` | `forall` over string positions | 456,976 inputs |
@@ -274,4 +284,4 @@ test result: ok. 9 passed; 0 failed
 
 ## License
 
-MIT. See [LICENSE(https://github.com/HyperonX-Team/probatum/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/HyperonX-Team/probatum/blob/main/LICENSE).

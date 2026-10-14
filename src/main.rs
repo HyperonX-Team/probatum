@@ -660,6 +660,15 @@ fn report_verdict(spec: &Spec, proof: &prove::ProofResult) -> ExitCode {
                 println!("  input:  {}", pairs.join(", "));
                 println!("  cause:  {}", cx.violation);
             }
+            // The diagnosis, not just the verdict. This is the part the
+            // SMT-backed tools leave to you: "postcondition might not hold"
+            // names no construct and suggests no change.
+            if !proof.suggestions.is_empty() {
+                println!("  suggested fix:");
+                for s in &proof.suggestions {
+                    println!("    - {}", s);
+                }
+            }
             ExitCode::from(1)
         }
         Verdict::NoViolationFound => {

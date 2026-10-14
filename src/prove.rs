@@ -32,6 +32,7 @@ use crate::ast::*;
 use crate::bdd::Bdd;
 use crate::bitblast::{self, BlastError, BitBlaster};
 use crate::eval;
+use crate::eval::{Fault, Violation};
 use crate::sha256::sha256_hex;
 
 /// Name a flat input vector for human consumption: scalar parameters by
@@ -105,6 +106,10 @@ pub struct ProofResult {
     /// Statistical bound when applicable: (upper bound on violation rate, confidence)
     pub stat_bound: Option<(f64, f64)>,
     pub cross_validated: bool,
+    /// Concrete things to change, derived from the violation. Presentation,
+    /// not proof: deliberately outside the certificate, which must stay a
+    /// deterministic function of the spec and the program.
+    pub suggestions: Vec<String>,
 }
 
 pub struct ProverOptions {
@@ -132,7 +137,338 @@ impl Default for ProverOptions {
     }
 }
 
-/// Prove (or refute) `spec` against `prog`.
+// ---------------------------------------------------------------------------
+// Diagnosis: minimal counterexamples and actionable advice
+// ---------------------------------------------------------------------------
+//
+// This is the axis where the SMT-backed tools are weakest by construction.
+// When Z3 or CBMC cannot discharge an obligation they report *that* it failed
+// — "postcondition might not hold", "assertion failed" — and the model they
+// hand back is an artifact of their search, often with values in the millions
+// and no indication of what to change. probatum owns the domain, so it can do
+// the two things that actually help: shrink the witness to its simplest form,
+// and name the construct to edit.
+
+/// Candidate replacements for one position, simplest-first.
+///
+/// "Simplest" means smallest magnitude, negative before positive (a negative
+/// boundary is the interesting one for arithmetic). Zero comes first when it is
+/// in the domain.
+///
+/// An earlier version tried the domain's `hi` third, on the theory that
+/// boundaries are where bugs live. But `hi` is not *simpler* than the current
+/// value, so the walk drifted outward until witnesses read
+/// `a=255, b=0, amount=255`. Minimality is the promise; interestingness
+/// follows from it, not the other way round.
+///
+/// If the domain excludes every small magnitude (`int[1000..2000]`), fall back
+/// to that domain's own floor.
+fn simpler_candidates(lo: i64, hi: i64, current: i64, limit: usize) -> Vec<i64> {
+    let mut out: Vec<i64> = Vec::new();
+    let mut m = 0i64;
+    while out.len() < limit && m <= 64 {
+        if m == 0 {
+            if lo <= 0 && 0 <= hi && current != 0 {
+                out.push(0);
+            }
+        } else {
+            if lo <= -m && -m <= hi && current != -m {
+                out.push(-m);
+            }
+            if out.len() < limit && lo <= m && m <= hi && current != m {
+                out.push(m);
+            }
+        }
+        m += 1;
+    }
+    if out.is_empty() {
+        if current != lo {
+            out.push(lo);
+        }
+        if out.len() < limit && current != hi {
+            out.push(hi);
+        }
+    }
+    out
+}
+
+/// Shrink a failing input to a simplest input that still fails.
+///
+/// Two phases, because coordinate descent alone gets stuck or wanders:
+///
+/// 1. **Strict descent.** For each argument, try strictly simpler values and
+///    keep the first that preserves the violation. Never move a coordinate
+///    *outward* — an earlier version accepted any failing candidate, which let
+///    a coordinate grow: from `(3,3)` (already optimal for `a + b > 5`) the
+///    walk drifted to `(4,2)`.
+/// 2. **Coordinated probes.** Strict descent cannot escape `(0,6)`, whose
+///    coordinates are each already minimal even though `(3,3)` is smaller in
+///    every norm a human cares about. So we also try setting *all* arguments
+///    to a common small magnitude ±t and keep the first that fails. That is
+///    what finds diagonal boundaries like `a + b > 5`.
+///
+/// The result is a genuine witness — candidates are only ever drawn from the
+/// declared domains — and it is a local minimum under both moves.
+pub fn minimize_counterexample(spec: &Spec, prog: &Program, inputs: &[i64]) -> Vec<i64> {
+    let domains = ast::input_domains(spec);
+    if inputs.len() != domains.len() || inputs.is_empty() {
+        return inputs.to_vec();
+    }
+    let fails =
+        |cand: &[i64]| matches!(eval::check_contract_program(spec, prog, cand), Err(_));
+    let mut cur = inputs.to_vec();
+    if !fails(&cur) {
+        return cur; // not a contract violation (e.g. an example witness): leave it
+    }
+
+    let mut rounds = 0;
+    loop {
+        rounds += 1;
+        if rounds > 6 {
+            break;
+        }
+        let before = cur.clone();
+
+        // Phase 1: strictly simpler, coordinate by coordinate.
+        for i in 0..cur.len() {
+            for c in simpler_candidates(domains[i].lo, domains[i].hi, cur[i], 16) {
+                if c.abs() >= cur[i].abs() {
+                    break; // never move a coordinate outward
+                }
+                let mut cand = cur.clone();
+                cand[i] = c;
+                if fails(&cand) {
+                    cur = cand;
+                    break;
+                }
+            }
+        }
+
+        // Phase 2: all arguments at a common small magnitude.
+        let ceiling = cur.iter().map(|v| v.abs()).max().unwrap_or(0);
+        let mut moved = false;
+        for t in 0..ceiling {
+            for sign in [-1i64, 1] {
+                let cand: Vec<i64> = domains
+                    .iter()
+                    .map(|d| (sign * t).max(d.lo).min(d.hi))
+                    .collect();
+                if cand != cur && fails(&cand) {
+                    cur = cand;
+                    moved = true;
+                    break;
+                }
+            }
+            if moved {
+                break;
+            }
+        }
+
+        if cur == before {
+            break; // stable under both moves
+        }
+    }
+    cur
+}
+
+/// Rebuild a flat input vector from named values (`a[0]`, `n`, …).
+fn flatten_named(spec: &Spec, named: &[(String, i64)]) -> Option<Vec<i64>> {
+    let mut out = Vec::new();
+    for b in &spec.params {
+        match b.ty {
+            Type::Array { index, .. } => {
+                for i in index.lo..=index.hi {
+                    let key = format!("{}[{}]", b.name, i);
+                    out.push(*named.iter().find(|(n, _)| *n == key).map(|(_, v)| v)?);
+                }
+            }
+            _ => out.push(*named.iter().find(|(n, _)| *n == b.name).map(|(_, v)| v)?),
+        }
+    }
+    Some(out)
+}
+
+/// Environment with inputs *and* results bound, for inspecting a failing clause.
+fn env_at(spec: &Spec, prog: &Program, inputs: &[i64]) -> Option<eval::Env> {
+    let mut m = eval::Machine::new(spec, inputs).ok()?;
+    m.exec_block(prog).ok()?;
+    let mut env = eval::input_env(spec, inputs);
+    for (b, v) in spec.results.iter().zip(m.results()) {
+        env.results.push((b.name.clone(), v));
+    }
+    for (name, contents) in m.arrays() {
+        if spec.results.iter().any(|r| &r.name == name) {
+            env.arrays.insert(name.clone(), contents.clone());
+        }
+    }
+    Some(env)
+}
+
+/// The message for a contract violation, with the actual values on both sides
+/// of a failing comparison. "ensures #1 false" is a fact; "the program has 5
+/// where the contract needs 7" is a diagnosis.
+fn diagnose_violation(spec: &Spec, prog: &Program, inputs: &[i64], v: &Violation) -> String {
+    let base = v.to_string();
+    if let Violation::EnsuresFalse { expr, .. } = v {
+        if let Expr::Binary(_, l, r) = expr {
+            if let Some(env) = env_at(spec, prog, inputs) {
+                if let (Ok(lv), Ok(rv)) = (eval::eval(l, &env), eval::eval(r, &env)) {
+                    let detail = match (lv.as_int(), rv.as_int()) {
+                        (Some(a), Some(b)) if a != b => {
+                            let d = a as i128 - b as i128;
+                            format!(
+                                " — the program has {} where the contract needs {} ({} {})",
+                                a,
+                                b,
+                                if d > 0 { "over by" } else { "short by" },
+                                d.abs()
+                            )
+                        }
+                        _ => format!(" — left is {}, right is {}", lv, rv),
+                    };
+                    return format!("{}{}", base, detail);
+                }
+            }
+        }
+    }
+    base
+}
+
+/// Concrete things to change. Every suggestion names the construct to edit,
+/// because "the proof failed" is not a bug report.
+fn advise(spec: &Spec, _prog: &Program, _inputs: &[i64], v: &Violation) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    match v {
+        Violation::Faulted { fault } => match fault {
+            Fault::DivByZero => out.push(
+                "guard the division: either `requires d != 0` (the caller must then establish \
+                 it) or `if d != 0 then a / d else 0` in the body"
+                    .into(),
+            ),
+            Fault::Overflow => out.push(
+                "narrow the parameter domains, or add a `requires` bound that keeps the \
+                 intermediate value representable"
+                    .into(),
+            ),
+            Fault::NonTermination { .. } => out.push(
+                "the loop never reached its exit condition: check that the body makes progress \
+                 toward the guard, and that `decreases` is a variant that actually shrinks"
+                    .into(),
+            ),
+            Fault::AssertionFailed { expr } => out.push(format!(
+                "the inline `assert {}` is false here — either the assertion states something \
+                 untrue, or an earlier statement fails to establish it",
+                expr
+            )),
+            Fault::IndexOutOfRange { array, .. } => out.push(format!(
+                "the index into `{}` left its declared domain: bound it with a `requires`, or \
+                 clamp it in the body",
+                array
+            )),
+            Fault::TypeMismatch(_) => {}
+        },
+        Violation::OutOfRange {
+            result,
+            value,
+            range,
+        } => out.push(format!(
+            "`{}` produced {}, outside {}. Either widen the result declaration, or add a \
+             `requires` that keeps the value inside it",
+            result, value, range
+        )),
+        Violation::EnsuresFalse { clause, expr } => {
+            let is_definition = matches!(
+                expr,
+                Expr::Binary(BinOp::Eq, l, r)
+                    if matches!(&**l, Expr::Result(_) | Expr::Param(_))
+                        || matches!(&**r, Expr::Result(_) | Expr::Param(_))
+            );
+            if is_definition {
+                out.push(format!(
+                    "ensure #{} is definitional: the body must compute exactly that expression, \
+                     and the input above shows where it diverges",
+                    clause + 1
+                ));
+            } else {
+                out.push(format!(
+                    "ensure #{} is a property, not a definition — the body has to establish it \
+                     for every in-domain input, not just the ones you had in mind",
+                    clause + 1
+                ));
+            }
+            // When the failing clause is a bound on a result, name that
+            // result's declaration: widening the type is often the honest fix,
+            // and weakening the clause is usually not.
+            if let Expr::Binary(op, l, _) = expr {
+                if matches!(op, BinOp::Ge | BinOp::Gt | BinOp::Le | BinOp::Lt) {
+                    if let Expr::Result(name) = &**l {
+                        if let Some(b) = spec.results.iter().find(|b| &b.name == name) {
+                            out.push(format!(
+                                "`{}` is declared {} — if the body can legitimately produce \
+                                 values outside that, widen the declaration; otherwise the body \
+                                 is wrong, not the type",
+                                name, b.ty
+                            ));
+                        }
+                    }
+                }
+            }
+        },
+    }
+    out
+}
+
+/// Advice for a failed loop obligation: the state where induction breaks is
+/// the single most useful thing an invariant author can be shown, and no
+/// SMT-backed tool shows it this directly.
+fn advise_obligation(kind: &str, inputs: &[(String, i64)]) -> Vec<String> {
+    let state = inputs
+        .iter()
+        .map(|(n, v)| format!("{}={}", n, v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match kind {
+        "loop preservation" => vec![format!(
+            "the invariant is not inductive: it holds at [{}], but the body does not restore \
+             it. Strengthen it with the fact the body changes — normally a statement about the \
+             counter, the accumulator, or how much of the array has been consumed",
+            state
+        )],
+        "loop exit" => vec![format!(
+            "the invariant is too weak to imply the postcondition at [{}], where the guard has \
+             just failed. Add the fact connecting the accumulator to the result",
+            state
+        )],
+        "loop termination" => vec![format!(
+            "the `decreases` variant does not strictly shrink at [{}]. Choose an expression the \
+             body provably reduces — usually the remaining iterations",
+            state
+        )],
+        _ => Vec::new(),
+    }
+}
+
+/// Minimize a counterexample, then re-derive its message and advice from the
+/// violation itself. Minimization and diagnosis are one step because both
+/// need the failing input's *meaning*, not just its values.
+fn sharpen(spec: &Spec, prog: &Program, cx: Counterexample) -> (Counterexample, Vec<String>) {
+    let Some(flat) = flatten_named(spec, &cx.inputs) else {
+        return (cx, Vec::new());
+    };
+    let minimal = minimize_counterexample(spec, prog, &flat);
+    match eval::check_contract_program(spec, prog, &minimal) {
+        Err(v) => (
+            Counterexample {
+                inputs: describe_inputs(spec, &minimal),
+                violation: diagnose_violation(spec, prog, &minimal, &v),
+            },
+            advise(spec, prog, &minimal, &v),
+        ),
+        Ok(_) => (cx, Vec::new()),
+    }
+}
+
+/// Prove (or refute) ``spec`` against ``prog``.
 ///
 /// Two paths, chosen by what the program actually is:
 ///
@@ -197,6 +533,11 @@ pub fn prove(spec: &Spec, prog: &Program, opts: &ProverOptions) -> ProofResult {
             pre_witness: Some(Vec::new()),
             stat_bound: None,
             cross_validated: false,
+            suggestions: vec![format!(
+                "example #{} pins the behaviour at those inputs: either fix the body to match \
+                 the witness, or correct the witness if the contract is what you meant",
+                idx + 1
+            )],
         };
     }
 
@@ -219,6 +560,7 @@ fn prove_with_hoare(
     let mut engines: Vec<EngineReport> = Vec::new();
     let mut counterexample: Option<Counterexample> = None;
     let mut notes: Vec<String> = Vec::new();
+    let mut obligation_advice: Vec<String> = Vec::new();
 
     // ---- Engine 1: execute the program over the whole domain --------------
     let mut exec_verdict: Option<Verdict> = None;
@@ -284,6 +626,9 @@ fn prove_with_hoare(
                 Verdict::Proved => {}
                 Verdict::Violated => {
                     all_proved = false;
+                    if let Some(cx) = &r.counterexample {
+                        obligation_advice.extend(advise_obligation(&ob.kind, &cx.inputs));
+                    }
                     failed = Some((ob.kind.clone(), Counstext {
                                     counterexample: r.counterexample.clone(),
                         obligation: ob.to_string(),
@@ -380,6 +725,15 @@ fn prove_with_hoare(
         (Some(Verdict::Proved), Some(Verdict::Proved))
     );
 
+    let (counterexample, mut suggestions) = match counterexample {
+        Some(cx) => {
+            let (c, s) = sharpen(spec, prog, cx);
+            (Some(c), s)
+        }
+        None => (None, Vec::new()),
+    };
+    suggestions.extend(obligation_advice);
+
     ProofResult {
         verdict,
         engines,
@@ -387,6 +741,7 @@ fn prove_with_hoare(
         pre_witness,
         stat_bound: None,
         cross_validated,
+        suggestions,
     }
 }
 
@@ -545,6 +900,14 @@ fn prove_straight(
         verdict
     };
 
+    let (counterexample, suggestions) = match counterexample {
+        Some(cx) => {
+            let (c, s) = sharpen(spec, &prog, cx);
+            (Some(c), s)
+        }
+        None => (None, Vec::new()),
+    };
+
     ProofResult {
         verdict,
         engines,
@@ -552,6 +915,7 @@ fn prove_straight(
         pre_witness,
         stat_bound,
         cross_validated,
+        suggestions,
     }
 }
 
@@ -1647,6 +2011,83 @@ mod tests {
         let r = prove(&s, &body, &ProverOptions::default());
         assert_eq!(r.verdict, Verdict::Proved, "engines: {:?}", r.engines);
         assert!(r.cross_validated, "both engines must agree on chains");
+    }
+
+    #[test]
+    fn minimizes_the_counterexample() {
+        // The failure region is a + b > 5, whose max-norm minimum is (3, 3).
+        // The first minimizer accepted any failing candidate, so a coordinate
+        // could grow and the witness drifted to (4, 2) — larger in every norm
+        // a reader cares about.
+        let s = parse(
+            r#"
+            spec widen(a: int[0..10], b: int[0..10]) returns (r: int[0..5])
+              ensures r >= 0
+            { r := a + b; }
+            "#,
+        )
+        .unwrap();
+        crate::sema::analyze(&s).unwrap();
+        let prog = s.body.clone().unwrap();
+        let r = prove(&s, &prog, &ProverOptions::default());
+        assert_eq!(r.verdict, Verdict::Violated);
+        let cx = r.counterexample.expect("a counterexample");
+        let a = cx.inputs.iter().find(|(n, _)| n == "a").unwrap().1;
+        let b = cx.inputs.iter().find(|(n, _)| n == "b").unwrap().1;
+        assert_eq!((a, b), (3, 3), "expected the minimal witness");
+    }
+
+    #[test]
+    fn advice_names_the_construct_to_change() {
+        let s = parse(
+            r#"
+            spec avg(a: int[0..100], n: int[0..10]) returns (r: int[0..100])
+              ensures r == a / n
+            { r := a / n; }
+            "#,
+        )
+        .unwrap();
+        crate::sema::analyze(&s).unwrap();
+        let prog = s.body.clone().unwrap();
+        let r = prove(&s, &prog, &ProverOptions::default());
+        assert_eq!(r.verdict, Verdict::Violated);
+        // The witness is the simplest one there is…
+        let cx = r.counterexample.expect("a counterexample");
+        assert!(
+            cx.inputs.iter().all(|(_, v)| *v == 0),
+            "expected the all-zero witness, got {:?}",
+            cx.inputs
+        );
+        // …and the advice names both ways out.
+        assert!(
+            r.suggestions
+                .iter()
+                .any(|s| s.contains("requires") && s.contains("!= 0")),
+            "advice must name a fix, got {:?}",
+            r.suggestions
+        );
+    }
+
+    #[test]
+    fn diagnosis_reports_the_values_on_both_sides() {
+        // "ensures #2 false" is a fact; naming the shortfall is a diagnosis.
+        let s = parse(
+            r#"
+            spec off_by_one(a: int[0..20]) returns (r: int[0..20])
+              ensures r == a + 1
+            { r := a; }
+            "#,
+        )
+        .unwrap();
+        crate::sema::analyze(&s).unwrap();
+        let prog = s.body.clone().unwrap();
+        let r = prove(&s, &prog, &ProverOptions::default());
+        let cx = r.counterexample.expect("a counterexample");
+        assert!(
+            cx.violation.contains("short by 1"),
+            "expected a numeric diagnosis, got: {}",
+            cx.violation
+        );
     }
 
     #[test]

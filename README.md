@@ -1,5 +1,10 @@
 # probatum
 
+[![crates.io](https://img.shields.io/crates/v/probatum.svg)](https://crates.io/crates/probatum)
+[![CI](https://github.com/HyperonX-Team/probatum/actions/workflows/ci.yml/badge.svg)](https://github.com/HyperonX-Team/probatum/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/HyperonX-Team/probatum/blob/main/LICENSE)
+[![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](https://github.com/HyperonX-Team/probatum/blob/main/Cargo.toml)
+
 > *probatum* — Latin, "proved" (from *probare*: to test, to try, to prove).
 > *Probatum est* was stamped on remedies that had been tested and found true —
 > a certification mark. That is what this tool leaves on your code.
@@ -30,13 +35,20 @@ invariant, cross-checked by running the loop on every input in the domain.
 ## Quick start
 
 ```console
+$ cargo install probatum
+
+$ probatum examples                    # write the 13 bundled specs
+$ probatum check   examples/sum_to_n.ic
+$ probatum compile examples/transfer_funds.ic --emit rust,go
+$ probatum verify  <out>/transfer_funds.cert <out>/transfer_funds.ic
+```
+
+No Rust toolchain needed to build it by hand — and no dependencies to pull in.
+Prefer to read the source, or want the very latest?
+
+```console
 $ git clone https://github.com/HyperonX-Team/probatum && cd probatum
 $ cargo build --release
-
-$ ./target/release/probatum examples          # write the 13 bundled specs
-$ ./target/release/probatum check   examples/sum_to_n.ic
-$ ./target/release/probatum compile examples/transfer_funds.ic --emit rust,go
-$ ./target/release/probatum verify  <out>/transfer_funds.cert <out>/transfer_funds.ic
 ```
 
 Every command exits `0` on proved/verified, `1` on refuted (with a concrete
@@ -207,7 +219,7 @@ Read these before trusting anything.
 | [`ARCHITECTURE.md`(https://github.com/HyperonX-Team/probatum/blob/main/ARCHITECTURE.md) | How it fits together, and the trust boundary |
 | [`ROADMAP.md`(https://github.com/HyperonX-Team/probatum/blob/main/ROADMAP.md) | Where it goes next — and what is deliberately not planned |
 
-**9,674 lines of Rust · 65 tests · 13 examples · 0 dependencies**
+**10524 lines of Rust · 66 tests · 13 examples · 0 dependencies**
 
 ```
 $ cargo test --release

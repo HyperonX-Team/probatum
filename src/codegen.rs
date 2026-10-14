@@ -41,7 +41,156 @@ impl TargetLang {
 fn emit_expr(e: &Expr, lang: TargetLang) -> String {
     match lang {
         TargetLang::Go => emit_expr_go(e),
-        _ => emit_expr_rust_like(e), // Rust and DSL share the shape
+        TargetLang::Rust => rust_expr(e, 0),
+        TargetLang::Dsl => emit_expr_rust_like(e),
+    }
+}
+
+/// Rust operator precedence for the emitted subset — HIGHER BINDS TIGHTER.
+///
+/// Mirrors rustc exactly. This is not a style choice: the emitted code must
+/// group *exactly* as the expression tree the prover verified, or the shipped
+/// code would not be the thing that was proven.
+fn rust_prec(e: &Expr) -> u8 {
+    match e {
+        Expr::Binary(op, ..) => match op {
+            BinOp::Or => 1,
+            BinOp::And => 2,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 3,
+            BinOp::Add | BinOp::Sub => 4,
+            BinOp::Mul | BinOp::Div | BinOp::Mod => 5,
+        },
+        // `if` and quantifier blocks; valid bare as operands only in trivial
+        // cases, so they group below everything and parenthesize on demand.
+        Expr::Ite(..) | Expr::Forall { .. } | Expr::Exists { .. } | Expr::Sum { .. } => 0,
+        // Names, literals, method-call chains, indexing, `as` chains: bind
+        // tighter than anything emitted above.
+        _ => 6,
+    }
+}
+
+fn rust_binop_spelling(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Le => "<=",
+        BinOp::Ge => ">=",
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
+    }
+}
+
+/// Can `e` stand bare immediately before a `.method(...)`?
+///
+/// Postfix (method call, index) binds tighter than any infix operator, so
+/// names, literals, booleans and index chains qualify. A *negative* literal
+/// does not — `.min` would bind to the absolute value, silently swapping
+/// `(-1).min(y)` for `-(1.min(y))` — and neither does `Len`, whose `as i64`
+/// cast sits BELOW postfix: `x.len() as i64.min(y)` attaches `.min` to the
+/// type, which does not compile.
+fn rust_is_postfix_operand(e: &Expr) -> bool {
+    match e {
+        Expr::Param(_) | Expr::BoolLit(_) | Expr::ArrayRead(..) => true,
+        Expr::IntLit(v) => *v >= 0,
+        _ => false,
+    }
+}
+
+/// Render `e` in Rust, parenthesized ONLY where rustc's precedence would
+/// otherwise group differently from the tree the prover verified.
+///
+/// `min_prec` is the lowest precedence allowed to stand bare in this
+/// position; anything looser gets the parentheses it needs — no more, no
+/// less. That restraint is also what keeps `unused_parens` silent in the
+/// generated code: every paren here is a load-bearing one.
+fn rust_expr(e: &Expr, min_prec: u8) -> String {
+    let body = match e {
+        Expr::IntLit(v) => v.to_string(),
+        Expr::BoolLit(b) => b.to_string(),
+        Expr::Param(n) | Expr::Result(n) => n.clone(),
+        Expr::Unary(op, a) => {
+            let s = rust_expr(a, 6);
+            // Defensive: adjacent unary operators (`--1`) parse but read as a
+            // mistake; grouping costs one paren and nothing else.
+            let s = if matches!(a.as_ref(), Expr::Unary(..)) {
+                format!("({s})")
+            } else {
+                s
+            };
+            match op {
+                UnOp::Neg => format!("-{s}"),
+                UnOp::Not => format!("!{s}"),
+            }
+        }
+        Expr::Binary(op, l, r) => {
+            // Left-associative: the left child may share the parent's
+            // precedence (`a - b - c` == `(a - b) - c`), the right child may
+            // not (`a - (b - c)` keeps its group).
+            let p = rust_prec(e);
+            let l = rust_expr(l, p);
+            let r = rust_expr(r, p + 1);
+            format!("{l} {} {r}", rust_binop_spelling(*op))
+        }
+        Expr::Ite(c, a, b) => format!(
+            "if {} {{ {} }} else {{ {} }}",
+            rust_expr(c, 0),
+            rust_expr(a, 0),
+            rust_expr(b, 0)
+        ),
+        Expr::Min(a, b) | Expr::Max(a, b) => {
+            let m = if matches!(e, Expr::Min(..)) { "min" } else { "max" };
+            let recv = if rust_is_postfix_operand(a) {
+                rust_expr(a, 0)
+            } else {
+                format!("({})", rust_expr(a, 0))
+            };
+            format!("{recv}.{m}({})", rust_expr(b, 0))
+        }
+        Expr::ArrayRead(n, i) => {
+            let plain = rust_expr(i, 0);
+            let idx = match i.as_ref() {
+                Expr::Param(_) | Expr::IntLit(_) => format!("{plain} as usize"),
+                _ => format!("({plain}) as usize"),
+            };
+            format!("{n}[{idx}]")
+        }
+        Expr::Len(n) => format!("{n}.len() as i64"),
+        Expr::Forall { var, lo, hi, body } => format!(
+            "{{ let mut ok = true; let __lo = {lo}; let __hi = {hi}; \
+             for {v} in __lo..=__hi {{ if !({b}) {{ ok = false; break; }} }} ok }}",
+            lo = rust_expr(lo, 0),
+            hi = rust_expr(hi, 0),
+            v = var,
+            b = rust_expr(body, 6),
+        ),
+        Expr::Exists { var, lo, hi, body } => format!(
+            "{{ let mut found = false; let __lo = {lo}; let __hi = {hi}; \
+             for {v} in __lo..=__hi {{ if {b} {{ found = true; break; }} }} found }}",
+            lo = rust_expr(lo, 0),
+            hi = rust_expr(hi, 0),
+            v = var,
+            b = rust_expr(body, 0),
+        ),
+        Expr::Sum { var, lo, hi, body } => format!(
+            "{{ let mut acc: i64 = 0; let __lo = {lo}; let __hi = {hi}; \
+             for {v} in __lo..=__hi {{ acc += {b}; }} acc }}",
+            lo = rust_expr(lo, 0),
+            hi = rust_expr(hi, 0),
+            v = var,
+            b = rust_expr(body, 0),
+        ),
+    };
+    if rust_prec(e) < min_prec {
+        format!("({body})")
+    } else {
+        body
     }
 }
 
@@ -230,13 +379,30 @@ pub fn emit(
 /// Every variable is declared up front (see the emitters), so statements are
 /// plain assignments in both languages — which is also what makes
 /// reassignment inside a loop correct in Go, where `:=` would shadow.
-fn emit_stmts(stmts: &[Stmt], lang: TargetLang, indent: usize) -> String {
+fn emit_stmts(stmts: &[Stmt], lang: TargetLang, indent: usize, let_for: &[String]) -> String {
     let pad = "    ".repeat(indent);
     let mut s = String::new();
     for st in stmts {
         match st {
             Stmt::Assign { name, value } => {
-                s.push_str(&format!("{}{} = {};\n", pad, name, emit_expr(value, lang)));
+                match lang {
+                    // Straight-line results become declarations AT the
+                    // assignment: there is exactly one write and the machine
+                    // never reads a result before it, so pre-declaring a
+                    // different value would only be a dead store rustc
+                    // rightly complains about.
+                    TargetLang::Rust if let_for.iter().any(|t| t == name) => {
+                        s.push_str(&format!("{}let {} = {};\n", pad, name, rust_expr(value, 0)));
+                    }
+                    _ => {
+                        s.push_str(&format!(
+                            "{}{} = {};\n",
+                            pad,
+                            name,
+                            emit_expr(value, lang)
+                        ));
+                    }
+                }
             }
             Stmt::ArrayAssign {
                 array,
@@ -272,18 +438,18 @@ fn emit_stmts(stmts: &[Stmt], lang: TargetLang, indent: usize) -> String {
                 else_body,
             } => {
                 s.push_str(&format!("{}if {} {{\n", pad, emit_expr(cond, lang)));
-                s.push_str(&emit_stmts(then_body, lang, indent + 1));
+                s.push_str(&emit_stmts(then_body, lang, indent + 1, let_for));
                 if else_body.is_empty() {
                     s.push_str(&format!("{}}}\n", pad));
                 } else {
                     s.push_str(&format!("{}}} else {{\n", pad));
-                    s.push_str(&emit_stmts(else_body, lang, indent + 1));
+                    s.push_str(&emit_stmts(else_body, lang, indent + 1, let_for));
                     s.push_str(&format!("{}}}\n", pad));
                 }
             }
             Stmt::While { cond, body, .. } => {
                 s.push_str(&format!("{}while {} {{\n", pad, emit_expr(cond, lang)));
-                s.push_str(&emit_stmts(body, lang, indent + 1));
+                s.push_str(&emit_stmts(body, lang, indent + 1, let_for));
                 s.push_str(&format!("{}}}\n", pad));
             }
         }
@@ -337,6 +503,152 @@ fn emit_dsl(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
     s.push_str(&crate::ast::render_program_stmts(prog, 1));
     s.push_str("}\n");
     s
+}
+
+// ---- dead-initializer avoidance ------------------------------------------
+//
+// The verifier's semantics give every local and result a defined value from
+// the moment of entry: the bottom of its declared domain. In generated code
+// that becomes an initializer — unless the program provably overwrites the
+// variable before any read, in which case the initializer is a dead store
+// rustc rightly flags.
+//
+// The trigger is a *first-touch* scan over the program in execution order.
+// Top-level statements always run, in order — control flow only nests
+// *within* them — so when the first mention of a variable is a top-level
+// write, no later read can ever observe the initial value. Any other first
+// touch (a read, or a write nested inside `if`/`while` that some
+// executions skip) keeps the initializer: the prover may well have reasoned
+// about it, and dropping it would change the verified semantics.
+const TOUCH_TOPWRITE: u8 = 0; // unconditionally written before anything else
+const TOUCH_NESTED_WRITE: u8 = 1; // first write exists but some runs skip it
+const TOUCH_READ: u8 = 2; // read before any write: the initial value matters
+
+fn first_touch_scan(prog: &Program) -> std::collections::HashMap<String, u8> {
+    fn expr_reads(e: &Expr, out: &mut Vec<String>) {
+        match e {
+            Expr::Param(n) | Expr::Result(n) => out.push(n.clone()),
+            Expr::ArrayRead(_, i) => expr_reads(i, out),
+            Expr::Len(_) => {}
+            Expr::Unary(_, a) => expr_reads(a, out),
+            Expr::Binary(_, l, r) => {
+                expr_reads(l, out);
+                expr_reads(r, out);
+            }
+            Expr::Ite(c, a, b) => {
+                expr_reads(c, out);
+                expr_reads(a, out);
+                expr_reads(b, out);
+            }
+            Expr::Min(a, b) | Expr::Max(a, b) => {
+                expr_reads(a, out);
+                expr_reads(b, out);
+            }
+            Expr::Forall { lo, hi, body, .. }
+            | Expr::Exists { lo, hi, body, .. }
+            | Expr::Sum { lo, hi, body, .. } => {
+                expr_reads(lo, out);
+                expr_reads(hi, out);
+                expr_reads(body, out);
+            }
+            Expr::IntLit(_) | Expr::BoolLit(_) => {}
+        }
+    }
+    fn scan(
+        prog: &[Stmt],
+        out: &mut std::collections::HashMap<String, u8>,
+        top: bool,
+    ) {
+        for st in prog {
+            match st {
+                Stmt::Assign { name, value } => {
+                    let mut reads = Vec::new();
+                    expr_reads(value, &mut reads);
+                    for r in reads {
+                        out.entry(r.clone()).or_insert(TOUCH_READ);
+                    }
+                    out.entry(name.clone()).or_insert(match top {
+                        true => TOUCH_TOPWRITE,
+                        false => TOUCH_NESTED_WRITE,
+                    });
+                }
+                Stmt::ArrayAssign {
+                    array,
+                    index,
+                    value,
+                } => {
+                    let mut reads = Vec::new();
+                    expr_reads(index, &mut reads);
+                    expr_reads(value, &mut reads);
+                    for r in reads {
+                        out.entry(r.clone()).or_insert(TOUCH_READ);
+                    }
+                    out.entry(array.clone()).or_insert(match top {
+                        true => TOUCH_TOPWRITE,
+                        false => TOUCH_NESTED_WRITE,
+                    });
+                }
+                Stmt::Assert(e) => {
+                    let mut reads = Vec::new();
+                    expr_reads(e, &mut reads);
+                    for r in reads {
+                        out.entry(r.clone()).or_insert(TOUCH_READ);
+                    }
+                }
+                Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                } => {
+                    let mut reads = Vec::new();
+                    expr_reads(cond, &mut reads);
+                    for r in reads {
+                        out.entry(r.clone()).or_insert(TOUCH_READ);
+                    }
+                    scan(then_body, out, false);
+                    scan(else_body, out, false);
+                }
+                Stmt::While { cond, body, .. } => {
+                    let mut reads = Vec::new();
+                    expr_reads(cond, &mut reads);
+                    for r in reads {
+                        out.entry(r.clone()).or_insert(TOUCH_READ);
+                    }
+                    scan(body, out, false);
+                }
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    scan(prog, &mut out, true);
+    out
+}
+
+/// How many assignments to `name` occur ANYWHERE in the program — loop
+/// bodies included. A first-touch-deferred variable written again inside a
+/// loop needs `mut`, and counting only the top level would miss exactly the
+/// common accumulator shape (`i := 0; while … { i := i + 1 }`).
+fn writes_total(prog: &Program, name: &str) -> usize {
+    fn go(prog: &[Stmt], name: &str, c: &mut usize) {
+        for s in prog {
+            match s {
+                Stmt::Assign { name: n, .. } if n == name => *c += 1,
+                Stmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    go(then_body, name, c);
+                    go(else_body, name, c);
+                }
+                Stmt::While { body, .. } => go(body, name, c),
+                _ => {}
+            }
+        }
+    }
+    let mut c = 0;
+    go(prog, name, &mut c);
+    c
 }
 
 fn emit_rust(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
@@ -395,9 +707,31 @@ fn emit_rust(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
         ));
     }
 
-    // Body: locals first (so the verifier's layout matches the emitted code),
-    // then the verified program.
+    // ---- declarations ----------------------------------------------------
+    //
+    // Two shapes, decided by what the program is:
+    //
+    // * **Straight-line** (assignments only): every result gets exactly one
+    //   write and is never read before it, so results become declarations AT
+    //   the assignment — `let x = rhs;`. A pre-declared `let mut x = 0;` whose
+    //   initializer the first statement overwrites is a dead store, and rustc
+    //   is right to flag it. Locals are deferred the same way when a
+    //   first-touch scan proves the invariant value is never read first.
+    //
+    // * **Control flow**: writes can be skipped or redone mid-flight, and the
+    //   machine's initial value (bottom of the declared domain) is part of
+    //   the verified semantics — every variable is declared up front,
+    //   initialized, and mutable.
+    let touch = first_touch_scan(prog);
+    let writes_of = |name: &str, prog: &Program| writes_total(prog, name);
+
+    // Locals: the initial value survives only when some execution can read
+    // it before any write (first touch = READ, or a write reachable only on
+    // some runs). Arrays are never deferred — a write targets one element,
+    // so the rest must exist.
     for l in &spec.locals {
+        let touch = touch.get(&l.name);
+        let defer = touch == Some(&TOUCH_TOPWRITE) && !matches!(l.ty, Type::Array { .. });
         match l.ty {
             Type::Array { index, elem } => s.push_str(&format!(
                 "    let mut {}: Vec<i64> = vec![{}i64; {}];\n",
@@ -405,17 +739,66 @@ fn emit_rust(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
                 elem.lo,
                 index.size()
             )),
-            Type::Int(r) => s.push_str(&format!("    let mut {}: i64 = {};\n", l.name, r.lo)),
-            Type::Decimal { stored, .. } => {
-                s.push_str(&format!("    let mut {}: i64 = {};\n", l.name, stored.lo))
+            Type::Int(r) if !defer => {
+                let writes = writes_of(l.name.as_str(), prog);
+                s.push_str(&format!(
+                    "    let {mut_}{}: i64 = {};\n",
+                    l.name,
+                    r.lo,
+                    mut_ = if writes > 1 { "mut " } else { "" }
+                ))
             }
-            Type::Bool => s.push_str(&format!("    let mut {}: bool = false;\n", l.name)),
+            Type::Int(_) => {
+                let writes = writes_of(l.name.as_str(), prog);
+                if writes > 1 {
+                    s.push_str(&format!("    let mut {}: i64;\n", l.name))
+                } else {
+                    s.push_str(&format!("    let {}: i64;\n", l.name))
+                }
+            }
+            Type::Decimal { stored, .. } if !defer => {
+                let writes = writes_of(l.name.as_str(), prog);
+                s.push_str(&format!(
+                    "    let {mut_}{}: i64 = {};\n",
+                    l.name,
+                    stored.lo,
+                    mut_ = if writes > 1 { "mut " } else { "" }
+                ))
+            }
+            Type::Decimal { .. } => s.push_str(&format!("    let {}: i64;\n", l.name)),
+            Type::Bool if !defer => {
+                let writes = writes_of(l.name.as_str(), prog);
+                s.push_str(&format!(
+                    "    let {mut_}{}: bool = false;\n",
+                    l.name,
+                    mut_ = if writes > 1 { "mut " } else { "" }
+                ))
+            }
+            Type::Bool => s.push_str(&format!("    let {}: bool;\n", l.name)),
         }
     }
-    // Results are declared up front too: a result assigned only inside a
-    // branch must still be definitely assigned on every path for the emitted
-    // code to compile — and the verifier's job is to ensure it always is.
+
+    // Results follow the same rule. A deferred result with exactly one
+    // write becomes the `let` at that write (via `let_for` below); with
+    // several writes it gets a plain binding the writes mutate. Arrays are
+    // always allocated up front.
+    let mut let_for: Vec<String> = Vec::new();
     for r in &spec.results {
+        let scalar = !matches!(r.ty, Type::Array { .. });
+        let defer = scalar && touch.get(&r.name) == Some(&TOUCH_TOPWRITE);
+        if defer && writes_of(r.name.as_str(), prog) == 1 {
+            let_for.push(r.name.clone());
+            continue;
+        }
+        if defer {
+            match r.ty {
+                Type::Int(_) => s.push_str(&format!("    let mut {}: i64;\n", r.name)),
+                Type::Decimal { .. } => s.push_str(&format!("    let mut {}: i64;\n", r.name)),
+                Type::Bool => s.push_str(&format!("    let mut {}: bool;\n", r.name)),
+                Type::Array { .. } => {}
+            }
+            continue;
+        }
         match r.ty {
             Type::Array { index, elem } => s.push_str(&format!(
                 "    let mut {}: Vec<i64> = vec![{}i64; {}];\n",
@@ -432,7 +815,7 @@ fn emit_rust(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
             Type::Bool => s.push_str(&format!("    let mut {}: bool = false;\n", r.name)),
         }
     }
-    s.push_str(&emit_stmts(prog, TargetLang::Rust, 1));
+    s.push_str(&emit_stmts(prog, TargetLang::Rust, 1, &let_for));
 
     // Postcondition backstops.
     for (i, c) in spec.ensures.iter().enumerate() {
@@ -547,7 +930,7 @@ fn emit_go(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
             Type::Bool => s.push_str(&format!("\tvar {} bool = false\n", r.name)),
         }
     }
-    s.push_str(&emit_stmts(prog, TargetLang::Go, 0));
+    s.push_str(&emit_stmts(prog, TargetLang::Go, 0, &[]));
     for (i, c) in spec.ensures.iter().enumerate() {
         s.push_str(&format!(
             "\tif !({}) {{ panic(\"ensures #{} violated\") }}\n",
@@ -606,9 +989,111 @@ mod tests {
         let code = emit(&s, &body, TargetLang::Rust, "deadbeef").unwrap();
         assert!(code.contains("pub fn transfer"));
         assert!(code.contains("verified-by-cert-sha256: deadbeef"));
-        assert!(code.contains("assert!((amount <= a)"));
-        assert!(code.contains("((x + y) == (a + b))"));
-        assert!(code.contains("(a - amount)"));
+        // Precedence-aware emission: a comparison stands bare, and a
+        // straight-line assignment declares its result AT the write — no
+        // dead initializer for rustc to flag.
+        assert!(code.contains("assert!(amount <= a"));
+        assert!(code.contains("(x + y) == (a + b)"));
+        assert!(code.contains("let x = a - amount;"));
+        assert!(!code.contains("let mut x: i64 = 0;"));
+    }
+
+    #[test]
+    fn rust_emission_groups_exactly_like_the_verified_tree() {
+        // The emitter must parenthesize only what rustc's precedence would
+        // otherwise group differently from the AST the prover verified.
+        // Each case below is a grouping that changes the meaning if it is
+        // dropped or mis-planned.
+
+        // `a - b + a` == (a - b) + a: same tree, left child shares precedence.
+        let add = Expr::Binary(
+            BinOp::Add,
+            Box::new(Expr::Binary(
+                BinOp::Sub,
+                Box::new(Expr::Param("a".into())),
+                Box::new(Expr::Param("b".into())),
+            )),
+            Box::new(Expr::Param("a".into())),
+        );
+        assert_eq!(
+            rust_expr(&add, 0),
+            "a - b + a",
+            "left-associative chains stay bare"
+        );
+
+        // `a - (b + c)`: the right child of `-` at equal precedence NEEDS its
+        // parens, or rustc would re-associate the subtraction.
+        let wrong_group = Expr::Binary(
+            BinOp::Sub,
+            Box::new(Expr::Param("a".into())),
+            Box::new(Expr::Binary(
+                BinOp::Add,
+                Box::new(Expr::Param("b".into())),
+                Box::new(Expr::Param("c".into())),
+            )),
+        );
+        assert_eq!(rust_expr(&wrong_group, 0), "a - (b + c)");
+
+        // `&&` of comparisons: both sides stand bare (Rust groups tight ops
+        // under loose ones automatically).
+        let both = Expr::Binary(
+            BinOp::And,
+            Box::new(Expr::Binary(
+                BinOp::Ge,
+                Box::new(Expr::Param("r".into())),
+                Box::new(Expr::Param("lo".into())),
+            )),
+            Box::new(Expr::Binary(
+                BinOp::Le,
+                Box::new(Expr::Param("r".into())),
+                Box::new(Expr::Param("hi".into())),
+            )),
+        );
+        assert_eq!(rust_expr(&both, 0), "r >= lo && r <= hi");
+
+        // Neg(Min): method call binds tighter than unary minus, so the
+        // intended `-(a.min(b))` renders correctly as `-a.min(b)`.
+        let neg_min = Expr::Unary(
+            UnOp::Neg,
+            Box::new(Expr::Min(
+                Box::new(Expr::Param("a".into())),
+                Box::new(Expr::Param("b".into())),
+            )),
+        );
+        assert_eq!(rust_expr(&neg_min, 0), "-a.min(b)");
+
+        // Min with a non-postfix receiver: `(a - b).min(0)` — the receiver
+        // group is load-bearing (`a - b.min(0)` would bind differently).
+        let min_recv = Expr::Min(
+            Box::new(Expr::Binary(
+                BinOp::Sub,
+                Box::new(Expr::Param("a".into())),
+                Box::new(Expr::Param("b".into())),
+            )),
+            Box::new(Expr::IntLit(0)),
+        );
+        assert_eq!(rust_expr(&min_recv, 0), "(a - b).min(0)");
+
+        // A negative literal as receiver: `(-1).min(y)` is NOT the same as
+        // `-(1.min(y))`.
+        let min_neg_lit = Expr::Min(
+            Box::new(Expr::IntLit(-1)),
+            Box::new(Expr::Param("y".into())),
+        );
+        assert_eq!(rust_expr(&min_neg_lit, 0), "(-1).min(y)");
+
+        // `if` as an operand must be grouped: `x + if …` would otherwise be
+        // ambiguous against block syntax.
+        let ite_operand = Expr::Binary(
+            BinOp::Add,
+            Box::new(Expr::Param("x".into())),
+            Box::new(Expr::Ite(
+                Box::new(Expr::Param("c".into())),
+                Box::new(Expr::IntLit(1)),
+                Box::new(Expr::IntLit(2)),
+            )),
+        );
+        assert_eq!(rust_expr(&ite_operand, 0), "x + (if c { 1 } else { 2 })");
     }
 
     #[test]
@@ -645,6 +1130,6 @@ mod tests {
         crate::sema::analyze(&s).unwrap();
         let body = s.body.clone().unwrap();
         let code = emit(&s, &body, TargetLang::Rust, "x").unwrap();
-        assert!(code.contains("(a / b)"));
+        assert!(code.contains("assert!(b != 0") && code.contains("r = a / b;"));
     }
 }

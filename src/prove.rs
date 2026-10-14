@@ -468,7 +468,56 @@ fn sharpen(spec: &Spec, prog: &Program, cx: Counterexample) -> (Counterexample, 
     }
 }
 
-/// Prove (or refute) ``spec`` against ``prog``.
+/// Split a conjunction into its top-level conjuncts.
+fn conjuncts_of(e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::Binary(BinOp::And, l, r) => {
+            conjuncts_of(l, out);
+            conjuncts_of(r, out);
+        }
+        _ => out.push(e.clone()),
+    }
+}
+
+/// Which part of a failed obligation actually fails, evaluated at the state the
+/// engine reported.
+///
+/// A loop obligation's goal is a conjunction, and printing the whole thing —
+/// `goal false: (((acc + i) == sum(...)) && ((i + 1) >= 0))` — makes the reader
+/// do the work of finding the broken part. Evaluating each conjunct at that
+/// state names it, which is the difference between a fact and a diagnosis.
+fn failing_conjuncts(ob: &crate::hoare::Obligation, named: &[(String, i64)]) -> Vec<String> {
+    let mut env = eval::Env::default();
+    for b in &ob.vars {
+        match b.ty {
+            Type::Array { index, .. } => {
+                let mut contents = Vec::new();
+                for i in index.lo..=index.hi {
+                    let key = format!("{}[{}]", b.name, i);
+                    if let Some((_, v)) = named.iter().find(|(n, _)| *n == key) {
+                        contents.push(*v);
+                    }
+                }
+                if !contents.is_empty() {
+                    env.arrays.insert(b.name.clone(), contents);
+                }
+            }
+            _ => {
+                if let Some((_, v)) = named.iter().find(|(n, _)| *n == b.name) {
+                    env.params.push((b.name.clone(), eval::Value::Int(*v)));
+                }
+            }
+        }
+    }
+    let mut cs = Vec::new();
+    conjuncts_of(&ob.goal, &mut cs);
+    cs.iter()
+        .filter(|c| !matches!(eval::eval(c, &env), Ok(eval::Value::Bool(true))))
+        .map(|c| c.to_string())
+        .collect()
+}
+
+/// Prove (or refute) `spec` against `prog`.
 ///
 /// Two paths, chosen by what the program actually is:
 ///
@@ -626,11 +675,22 @@ fn prove_with_hoare(
                 Verdict::Proved => {}
                 Verdict::Violated => {
                     all_proved = false;
-                    if let Some(cx) = &r.counterexample {
-                        obligation_advice.extend(advise_obligation(&ob.kind, &cx.inputs));
+                    let mut cx = r.counterexample.clone();
+                    if let Some(c) = cx.as_mut() {
+                        obligation_advice.extend(advise_obligation(&ob.kind, &c.inputs));
+                        // Name the conjunct that broke instead of printing the
+                        // whole goal for the reader to search.
+                        let failing = failing_conjuncts(ob, &c.inputs);
+                        if !failing.is_empty() {
+                            c.violation = format!(
+                                "{} fails: {} is not established at this state",
+                                ob.kind,
+                                failing.join("; and ")
+                            );
+                        }
                     }
                     failed = Some((ob.kind.clone(), Counstext {
-                                    counterexample: r.counterexample.clone(),
+                        counterexample: cx,
                         obligation: ob.to_string(),
                     }));
                     break;
@@ -2090,6 +2150,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn names_the_failing_conjunct_of_an_obligation() {
+        // A loop obligation's goal is a conjunction. Printing the whole thing
+        // makes the reader hunt for the broken part; the diagnosis should name
+        // it, and say which loop fact is missing.
+        let s = parse(
+            r#"
+            spec bad_inv(n: int[0..5])
+              returns (s: int[0..20])
+              locals (i: int[0..6], acc: int[0..20])
+              ensures s >= 0
+            {
+              i := 0; acc := 0;
+              while i <= n
+                invariant acc == sum(k in 0..i: k)
+                invariant i >= 0
+                decreases n - i + 1
+              { acc := acc + i; i := i + 1; }
+              s := acc;
+            }
+            "#,
+        )
+        .unwrap();
+        crate::sema::analyze(&s).unwrap();
+        let prog = s.body.clone().unwrap();
+        let r = prove(&s, &prog, &ProverOptions::default());
+        assert_eq!(r.verdict, Verdict::Violated);
+        let cx = r.counterexample.expect("a counterexample");
+        assert!(
+            cx.violation.contains("loop preservation fails"),
+            "should name the obligation kind, got: {}",
+            cx.violation
+        );
+        assert!(
+            cx.violation.contains("sum"),
+            "should name the broken conjunct, got: {}",
+            cx.violation
+        );
+        assert!(
+            r.suggestions.iter().any(|s| s.contains("not inductive")),
+            "should explain that the invariant is not inductive, got: {:?}",
+            r.suggestions
+        );
+    }
     #[test]
     fn certificate_roundtrip_and_tamper_detection() {
         let s = parse(

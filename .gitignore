@@ -5,3 +5,5 @@
 *.rlib
 *.txt
 **/*.rs.bk
+# local scratch specs from development
+est/

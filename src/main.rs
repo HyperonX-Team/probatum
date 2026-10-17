@@ -57,7 +57,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("probatum: unknown command `{}`\n", other);
+            eprintln!("probatum: unknown command `{}` (run `probatum --help`)\n", other);
             print_help();
             ExitCode::from(2)
         }

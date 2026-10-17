@@ -137,9 +137,7 @@ impl Default for ProverOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Diagnosis: minimal counterexamples and actionable advice
-// ---------------------------------------------------------------------------
 //
 // This is the axis where the SMT-backed tools are weakest by construction.
 // When Z3 or CBMC cannot discharge an obligation they report *that* it failed
@@ -611,7 +609,7 @@ fn prove_with_hoare(
     let mut notes: Vec<String> = Vec::new();
     let mut obligation_advice: Vec<String> = Vec::new();
 
-    // ---- Engine 1: execute the program over the whole domain --------------
+    // Engine 1: execute the program over the whole domain
     let mut exec_verdict: Option<Verdict> = None;
     if opts.engine == "auto" || opts.engine == "exhaustive" {
         match run_exhaustive(spec, prog, opts.exhaustive_budget) {
@@ -646,7 +644,7 @@ fn prove_with_hoare(
         }
     }
 
-    // ---- Engine 2: Hoare obligations, discharged symbolically -------------
+    // Engine 2: Hoare obligations, discharged symbolically
     let obs = crate::hoare::obligations(spec, prog);
     let mut hc_verdict: Option<Verdict> = None;
     if opts.engine == "auto" || opts.engine == "bdd" || opts.engine == "exhaustive" {
@@ -748,7 +746,7 @@ fn prove_with_hoare(
         });
     }
 
-    // ---- combine ----------------------------------------------------------
+    // combine
     let verdict = match (exec_verdict.clone(), hc_verdict.clone()) {
         (Some(a), Some(b)) if a == b => a,
         (Some(Verdict::Violated), _) | (_, Some(Verdict::Violated)) => Verdict::Violated,
@@ -819,7 +817,7 @@ fn prove_straight(
     domain: u128,
 ) -> ProofResult {
 
-    // ---- Vacuity: does any input reach the body? --------------------------
+    // Vacuity: does any input reach the body?
     // (Complete over the whole domain when feasible; otherwise sampled.)
     let (pre_witness, vacuity_notes) = check_vacuity(spec, body, opts, domain);
 
@@ -835,7 +833,7 @@ fn prove_straight(
     let want_bdd = opts.engine == "auto" || opts.engine == "bdd";
     let want_stat = opts.engine == "statistical";
 
-    // ---- Engine 1: exhaustive -------------------------------------------
+    // Engine 1: exhaustive
     let mut exhaustive_verdict: Option<Verdict> = None;
     let prog = ast::assigns_to_program(body);
     if want_exhaustive {
@@ -865,7 +863,7 @@ fn prove_straight(
         }
     }
 
-    // ---- Engine 2: BDD ---------------------------------------------------
+    // Engine 2: BDD
     let mut bdd_verdict: Option<Verdict> = None;
     if want_bdd {
         match run_bdd(spec, body, opts.bdd_budget) {
@@ -894,7 +892,7 @@ fn prove_straight(
         }
     }
 
-    // ---- Engine 3: statistical (only if nothing complete succeeded) ------
+    // Engine 3: statistical (only if nothing complete succeeded)
     let complete = exhaustively_complete(&exhaustive_verdict) || exhaustively_complete(&bdd_verdict);
     if !complete && (want_stat || opts.engine == "auto" || opts.engine == "statistical") {
         let (v, bound, notes) = run_statistical(spec, body, opts);
@@ -908,7 +906,7 @@ fn prove_straight(
         });
     }
 
-    // ---- Cross-validation ------------------------------------------------
+    // Cross-validation
     let mut cross_validated = false;
     let verdict = match (exhaustive_verdict, bdd_verdict) {
         (Some(a), Some(b)) if a == b => {
@@ -983,9 +981,7 @@ fn exhaustively_complete(v: &Option<Verdict>) -> bool {
     matches!(v, Some(Verdict::Proved) | Some(Verdict::Violated))
 }
 
-// ---------------------------------------------------------------------------
 // Vacuity check
-// ---------------------------------------------------------------------------
 
 struct ExhaustiveReport {
     verdict: Verdict,
@@ -1126,9 +1122,7 @@ fn decode_params(
     out
 }
 
-// ---------------------------------------------------------------------------
 // Odometer
-// ---------------------------------------------------------------------------
 
 fn increment(ranges: &[IntRange], inputs: &mut [i64]) -> bool {
     for i in (0..inputs.len()).rev() {
@@ -1141,9 +1135,7 @@ fn increment(ranges: &[IntRange], inputs: &mut [i64]) -> bool {
     false // wrapped
 }
 
-// ---------------------------------------------------------------------------
 // Exhaustive engine
-// ---------------------------------------------------------------------------
 
 /// The exhaustive engine: walk every input in the domain and *execute* the
 /// program (loops, branches and all) through the reference machine.
@@ -1206,9 +1198,7 @@ fn run_exhaustive(
     })
 }
 
-// ---------------------------------------------------------------------------
 // BDD engine
-// ---------------------------------------------------------------------------
 
 struct BddReport {
     verdict: Verdict,
@@ -1307,9 +1297,7 @@ fn run_bdd(spec: &Spec, body: &[Assign], budget: usize) -> Result<BddReport, Str
     }
 }
 
-// ---------------------------------------------------------------------------
 // Obligation checking (the Hoare path)
-// ---------------------------------------------------------------------------
 
 /// Result of checking one universally quantified obligation.
 pub struct ValidityResult {
@@ -1334,7 +1322,7 @@ pub fn check_validity(
     let mut exhaustive_verdict: Option<Verdict> = None;
     let mut bdd_verdict: Option<Verdict> = None;
 
-    // ---- exhaustive over the obligation's variable domains ---------------
+    // exhaustive over the obligation's variable domains
     // Only attempted when the state space is genuinely small: each state may
     // evaluate quantifiers, so this engine is for obligations the symbolic
     // engine cannot take (arrays), not the default. For loops the symbolic
@@ -1413,7 +1401,7 @@ pub fn check_validity(
         ));
     }
 
-    // ---- BDD over the same obligation ------------------------------------
+    // BDD over the same obligation
     if opts.engine == "auto" || opts.engine == "bdd" {
         match bdd_check_validity(vars, assumptions, goal, opts.bdd_budget) {
             Ok((verdict, nodes, cx)) => {
@@ -1441,7 +1429,7 @@ pub fn check_validity(
         }
     }
 
-    // ---- cross-validate ---------------------------------------------------
+    // cross-validate
     let verdict = match (exhaustive_verdict, bdd_verdict) {
         (Some(a), Some(b)) if a == b => a,
         (Some(a), Some(b)) => {
@@ -1721,9 +1709,7 @@ impl SplitMix64 {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Certificate
-// ---------------------------------------------------------------------------
 
 /// A proof certificate: everything needed to re-derive the proof, plus a
 /// digest binding it to the exact spec and program bytes.

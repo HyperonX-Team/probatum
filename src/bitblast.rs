@@ -278,7 +278,7 @@ impl<'a> BitBlaster<'a> {
         self.bdd.and(ge_lo, le_hi).map_err(BlastError::Budget)
     }
 
-    // ---- bit helpers ------------------------------------------------------
+    // bit helpers
 
     fn sign_extend(&mut self, v: &IVal, w: usize) -> Result<Vec<u32>, BlastError> {
         debug_assert!(w >= v.bits.len());
@@ -389,7 +389,7 @@ impl<'a> BitBlaster<'a> {
         Ok(acc)
     }
 
-    // ---- expression compilation ------------------------------------------
+    // expression compilation
 
     /// Compile an integer expression over already-compiled integer params.
     pub fn blast_int(
@@ -466,11 +466,7 @@ impl<'a> BitBlaster<'a> {
                 let bv = self.blast_int(b, env)?;
                 self.int_minmax(av, bv, range, false)
             }
-            // ---- quantifiers: unrolled symbolically ------------------
-            // Bounds may be symbolic, so we unroll over the widest range the
-            // bound can take and guard every term with `k <= bound`. That is
-            // exact: iterations beyond the true bound contribute nothing
-            // (0 for a sum, `true` for `forall`, `false` for `exists`).
+            // quantifiers: unrolled symbolically, guarded by `k <= bound`.
             Expr::Sum { var, lo, hi, body } => {
                 let lo_r = self.expr_range(lo, env)?;
                 let hi_r = self.expr_range(hi, env)?;
@@ -495,11 +491,7 @@ impl<'a> BitBlaster<'a> {
             Expr::Forall { .. } | Expr::Exists { .. } => Err(BlastError::Unsupported(
                 "quantifier in int position",
             )),
-            // ---- arrays: ITE chains over element variables ------------------
-            // `a[i]` with a symbolic `i` is exactly
-            //   ite(i == 0, a0, ite(i == 1, a1, … , a_{N-1}))
-            // and an out-of-range index is a FAULT (the classic out-of-bounds
-            // bug, turned into a proof obligation).
+            // arrays: ITE chains over element variables; out-of-range is a fault.
             Expr::ArrayRead(name, idx) => {
                 let elems = self
                     .arrays
@@ -754,7 +746,7 @@ impl<'a> BitBlaster<'a> {
         range: IntRange,
     ) -> Result<IVal, BlastError> {
         match op {
-            // ---- division and remainder: restoring circuits ----------------
+            // division and remainder: restoring circuits
             // The last fragment the symbolic engine used to decline. Division
             // by zero, and a fault in either operand, become the node's fault
             // signal � so the evaluator's semantics are mirrored exactly.
@@ -773,10 +765,7 @@ impl<'a> BitBlaster<'a> {
                 let av = self.blast_int(l, env)?;
                 let bv = self.blast_int(r, env)?;
                 let fault = self.bdd.or(av.fault, bv.fault).map_err(BlastError::Budget)?;
-                // The circuit must be wide enough for the RESULT range *and*
-                // for both OPERANDS: in a chain like `a + 1 - 1`, an
-                // intermediate can be wider than the final static range.
-                // (Cross-validation caught this as an engine panic.)
+                // The circuit must be wide enough for result and operands.
                 let w = width_for(range)
                     .max(av.bits.len())
                     .max(bv.bits.len())
@@ -805,9 +794,7 @@ impl<'a> BitBlaster<'a> {
                     range,
                 })
             }
-            // Comparisons produce bools — never reached from blast_int on a
-            // bool-typed node, but the type checker routes them there only
-            // when the caller is wrong. Guard anyway.
+            // Comparisons produce bools — guarded anyway.
             _ => Err(BlastError::Unsupported("comparison in int position")),
         }
     }
@@ -919,11 +906,7 @@ impl<'a> BitBlaster<'a> {
                 // v0.1 int-only params ⇒ unreachable if sema passed.
                 Err(BlastError::Unsupported("bool variable"))
             }
-            // ---- quantifiers: unrolled symbolically -----------------------
-            // Bounds may be symbolic, so unroll over the widest range the
-            // bound can take, guarding each term with `k <= bound`. Exact:
-            // iterations past the true bound are vacuous (`true` for forall,
-            // `false` for exists).
+            // quantifiers: unrolled symbolically, guarded by `k <= bound`.
             Expr::Forall { var, lo, hi, body } => {
                 let lo_r = self.expr_range(lo, env)?;
                 let hi_r = self.expr_range(hi, env)?;
@@ -991,7 +974,7 @@ impl<'a> BitBlaster<'a> {
         pre: &[Expr],
         post: &[Expr],
     ) -> Result<u32, BlastError> {
-        // 1. domain_ok over every leaf variable.
+        // domain_ok over every leaf variable.
         let mut domain_ok = TRUE;
         for (name, v, range) in domain_parts {
             let _ = name;
@@ -999,7 +982,7 @@ impl<'a> BitBlaster<'a> {
             domain_ok = self.bdd.and(domain_ok, ok).map_err(BlastError::Budget)?;
         }
 
-        // 2. assumptions hold (and don't fault).
+        // assumptions hold (and don't fault).
         let mut assump = TRUE;
         for a in pre {
             let c = self.blast_bool(a, param_vals)?;
@@ -1008,7 +991,7 @@ impl<'a> BitBlaster<'a> {
             assump = self.bdd.and(assump, holds).map_err(BlastError::Budget)?;
         }
 
-        // 3. negate the conjunction of goals.
+        // negate the conjunction of goals.
         let mut all_goals = TRUE;
         for g in post {
             let c = self.blast_bool(g, param_vals)?;
@@ -1022,7 +1005,7 @@ impl<'a> BitBlaster<'a> {
         self.bdd.and(d, goal_fails).map_err(BlastError::Budget)
     }
 
-    /// The full bad-state function for (spec, body) over compiled params.
+    /// Bad-state function for (spec, body) over compiled params.
     ///
     /// Returns `(bad, domain_ok, pre_ok)`.
     pub fn bad_state(
@@ -1032,7 +1015,7 @@ impl<'a> BitBlaster<'a> {
         param_vals: &std::collections::HashMap<String, IVal>,
         param_nodes: &[(String, IVal)],
     ) -> Result<u32, BlastError> {
-        // 1. domain_ok: every param's raw bits within declared range.
+        // domain_ok over every param.
         let mut domain_ok = TRUE;
         for (name, v) in param_nodes {
             let range = match spec.params.iter().find(|b| &b.name == name) {
@@ -1050,7 +1033,7 @@ impl<'a> BitBlaster<'a> {
             domain_ok = self.bdd.and(domain_ok, ok).map_err(BlastError::Budget)?;
         }
 
-        // 2. Substitute the body into ensures, making everything param-only.
+        // Substitute the body into ensures, making everything param-only.
         let subst_map = body_subst_map(body)?;
         let mut post = TRUE;
         let mut post_fault = FALSE;
@@ -1066,9 +1049,8 @@ impl<'a> BitBlaster<'a> {
         let pre_ok = post;
         let _ = post_fault;
 
-        // Result-range checks + ensures, with body substituted in.
-        // Results are matched to their assignment BY NAME — the body may
-        // assign results in any order.
+        // Result-range checks + ensures, body substituted in.
+        // Results matched by name — body may assign in any order.
         let mut viol = FALSE;
         for res in &spec.results {
             let assigns = body

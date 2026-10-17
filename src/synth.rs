@@ -118,7 +118,7 @@ pub fn synthesize(spec: &Spec, opts: &ProverOptions) -> Result<Synthesis, SynthE
         cegis_round += 1;
         stats.cegis_rounds = cegis_round;
 
-        // ---- cover the remaining results --------------------------------
+        // cover the remaining results
         let mut assigns: Vec<Assign> = Vec::new();
         let mut missing: Vec<String> = Vec::new();
         for r in &spec.results {
@@ -190,7 +190,7 @@ pub fn synthesize(spec: &Spec, opts: &ProverOptions) -> Result<Synthesis, SynthE
             });
         }
 
-        // ---- the moment of truth: the prover ----------------------------
+        // the moment of truth: the prover
         let proof = prove::prove(spec, &crate::ast::assigns_to_program(&body), opts);
         match proof.verdict {
             Verdict::Proved => {
@@ -268,9 +268,7 @@ pub fn synthesize(spec: &Spec, opts: &ProverOptions) -> Result<Synthesis, SynthE
     }
 }
 
-// ---------------------------------------------------------------------------
 // Example validation
-// ---------------------------------------------------------------------------
 
 fn validate_examples(spec: &Spec) -> Result<(), SynthError> {
     for (i, ex) in spec.examples.iter().enumerate() {
@@ -334,9 +332,7 @@ fn validate_examples(spec: &Spec) -> Result<(), SynthError> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Definitional extraction
-// ---------------------------------------------------------------------------
 
 fn extract_definitions(spec: &Spec) -> Result<HashMap<String, Expr>, SynthError> {
     // Pass 1: direct `r == param-only` (either side). `r` may be written as
@@ -532,9 +528,7 @@ fn mentions_result(e: &Expr) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Sample inputs (for observational pruning)
-// ---------------------------------------------------------------------------
 
 fn build_sample_inputs(spec: &Spec, examples: &[Example]) -> Vec<Vec<i64>> {
     let mut out: Vec<Vec<i64>> = examples.iter().map(|e| e.inputs.clone()).collect();
@@ -558,9 +552,7 @@ fn build_sample_inputs(spec: &Spec, examples: &[Example]) -> Vec<Vec<i64>> {
     out
 }
 
-// ---------------------------------------------------------------------------
 // Enumerative search
-// ---------------------------------------------------------------------------
 
 /// Signature of a candidate: its value on every sample input (fault = i64::MIN).
 type Signature = Vec<i64>;
@@ -896,9 +888,7 @@ fn collect_literals(spec: &Spec) -> Vec<i64> {
     out
 }
 
-// ---------------------------------------------------------------------------
 // Output solving (for CEGIS witness completion)
-// ---------------------------------------------------------------------------
 
 /// Find an output tuple satisfying every `ensures` clause at `inputs`.
 /// `Ok(None)` ⇒ *no* tuple works ⇒ the spec is unrealizable at this input.

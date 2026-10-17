@@ -120,7 +120,7 @@ fn check_expr(
                         };
                         Ok(Type::Int(IntRange::new(lo, hi)))
                     }
-                    // ---- exact decimal arithmetic ---------------------------
+                    // exact decimal arithmetic
                     // Money is a scaled integer. `+`/`-` on the *stored*
                     // values is exact because both sides share a scale; that
                     // is the whole reason to prefer fixed point over binary
@@ -284,7 +284,7 @@ fn check_expr(
                 _ => err("`min`/`max` expect int operands"),
             }
         }
-        // ---- quantifiers and folds ----------------------------------------
+        // quantifiers and folds
         Expr::Forall { var, lo, hi, body } | Expr::Exists { var, lo, hi, body } => {
             let bound = check_bound_range(lo, hi, var, params, locals, results, assigned)?;
             // Inside the quantifier the bound variable is a fresh integer in
@@ -352,7 +352,7 @@ fn check_expr(
                 other => err(format!("`sum` body must be int, got `{}`", other)),
             }
         }
-        // ---- arrays --------------------------------------------------------
+        // arrays
         Expr::ArrayRead(name, index) => {
             let elem = lookup_array(name, params, locals, results)?;
             let it = check_expr(index, params, locals, results, assigned)?;
@@ -480,9 +480,7 @@ fn join(a: &Type, b: &Type) -> Type {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Statement checking
-// ---------------------------------------------------------------------------
 
 fn check_program(spec: &Spec, prog: &[Stmt]) -> Result<(), SemError> {
     let mut definite: HashSet<String> = HashSet::new();

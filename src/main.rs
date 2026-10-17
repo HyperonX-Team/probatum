@@ -100,9 +100,7 @@ The spec language:
     );
 }
 
-// ---------------------------------------------------------------------------
 // argument parsing
-// ---------------------------------------------------------------------------
 
 struct Opts {
     engine: String,
@@ -198,9 +196,7 @@ fn read_spec(path: &Path) -> Result<Spec, String> {
     Ok(spec)
 }
 
-// ---------------------------------------------------------------------------
 // probatum check
-// ---------------------------------------------------------------------------
 
 fn cmd_check(args: &[String]) -> ExitCode {
     let o = match parse_opts(args) {
@@ -227,9 +223,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
     report_verdict(&spec, &prove::prove(&spec, &body, &to_prover_opts(&o)))
 }
 
-// ---------------------------------------------------------------------------
 // probatum compile
-// ---------------------------------------------------------------------------
 
 fn cmd_compile(args: &[String]) -> ExitCode {
     let o = match parse_opts(args) {
@@ -436,9 +430,7 @@ fn cmd_compile(args: &[String]) -> ExitCode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // probatum verify — the path that does not trust the compiler
-// ---------------------------------------------------------------------------
 
 fn cmd_verify(args: &[String]) -> ExitCode {
     let o = match parse_opts(args) {
@@ -536,9 +528,7 @@ fn cmd_verify(args: &[String]) -> ExitCode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // probatum replay
-// ---------------------------------------------------------------------------
 
 fn cmd_replay(args: &[String]) -> ExitCode {
     let Some(cert_path) = args.first() else {
@@ -564,9 +554,7 @@ fn cmd_replay(args: &[String]) -> ExitCode {
     }
 }
 
-// ---------------------------------------------------------------------------
 // probatum examples
-// ---------------------------------------------------------------------------
 
 // The bundled examples are read straight from `examples/` at compile time.
 // One source of truth: the files the user can read are the files the tests
@@ -606,9 +594,7 @@ fn cmd_examples(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-// ---------------------------------------------------------------------------
 // helpers
-// ---------------------------------------------------------------------------
 
 fn usage_err(msg: &str) -> ExitCode {
     eprintln!("probatum: {}\n", msg);

@@ -102,7 +102,7 @@ impl Parser {
         }
     }
 
-    // ---- grammar ----------------------------------------------------------
+    // grammar
 
     pub fn parse_spec(&mut self) -> PResult<Spec> {
         self.expect(&Tok::Spec, "`spec`")?;
@@ -420,7 +420,7 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> PResult<Stmt> {
         match self.peek().clone() {
-            // ---- if / else -------------------------------------------------
+            // if / else
             Tok::If => {
                 self.advance();
                 let cond = self.parse_expr()?;
@@ -442,7 +442,7 @@ impl Parser {
                 })
             }
 
-            // ---- while with invariants -------------------------------------
+            // while with invariants
             Tok::While => {
                 self.advance();
                 let cond = self.parse_expr()?;
@@ -479,7 +479,7 @@ impl Parser {
                 })
             }
 
-            // ---- assert ----------------------------------------------------
+            // assert
             Tok::Assert => {
                 self.advance();
                 let e = self.parse_expr()?;
@@ -487,7 +487,7 @@ impl Parser {
                 Ok(Stmt::Assert(e))
             }
 
-            // ---- assignment (scalar or indexed) ----------------------------
+            // assignment (scalar or indexed)
             Tok::Ident(name) => {
                 self.advance();
                 if self.at(&Tok::LBracket) {

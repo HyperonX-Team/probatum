@@ -242,7 +242,7 @@ fn emit_expr_rust_like(e: &Expr) -> String {
             emit_expr_rust_like(a),
             emit_expr_rust_like(b)
         ),
-        // ---- arrays, quantifiers, folds -----------------------------------
+        // arrays, quantifiers, folds
         // Emitted as inline blocks so the result is a plain expression, which
         // keeps generated code readable and avoids inventing helper names.
         Expr::ArrayRead(n, i) => format!("{}[({}) as usize]", n, emit_expr_rust_like(i)),
@@ -315,7 +315,7 @@ fn emit_expr_go(e: &Expr) -> String {
             let (x, y) = (emit_expr_go(a), emit_expr_go(b));
             format!("func() int64 {{ if {} > {} {{ return {} }}; return {} }}()", x, y, x, y)
         }
-        // ---- arrays, quantifiers, folds -----------------------------------
+        // arrays, quantifiers, folds
         Expr::ArrayRead(n, i) => format!("{}[{}]", n, emit_expr_go(i)),
         Expr::Len(n) => format!("int64(len({}))", n),
         Expr::Forall { var, lo, hi, body } => format!(
@@ -505,7 +505,7 @@ fn emit_dsl(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
     s
 }
 
-// ---- dead-initializer avoidance ------------------------------------------
+// dead-initializer avoidance
 //
 // The verifier's semantics give every local and result a defined value from
 // the moment of entry: the bottom of its declared domain. In generated code
@@ -707,7 +707,7 @@ fn emit_rust(spec: &Spec, prog: &Program, cert_digest: &str) -> String {
         ));
     }
 
-    // ---- declarations ----------------------------------------------------
+    // declarations
     //
     // Two shapes, decided by what the program is:
     //

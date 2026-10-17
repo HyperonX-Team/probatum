@@ -33,8 +33,7 @@
 
 use crate::ast::*;
 
-/// A proof obligation: `assumptions ⇒ goal`, universally quantified over
-/// every variable in scope.
+/// A proof obligation: `assumptions ⇒ goal`, quantified over every variable.
 #[derive(Clone, Debug)]
 pub struct Obligation {
     /// Short label: "contract", "loop entry", "loop preservation", …
@@ -141,11 +140,7 @@ pub fn subst_var(e: &Expr, name: &str, replacement: &Expr) -> Expr {
     }
 }
 
-/// The variables an obligation quantifies over: only those it actually
-/// mentions. Restricting to the free variables is sound (an unmentioned
-/// variable cannot affect the truth of the implication) and it shrinks the
-/// state space dramatically — a loop proof that names three variables should
-/// not be enumerated over the whole program's state.
+/// The variables an obligation quantifies over: only those it mentions.
 fn scope_vars(spec: &Spec, exprs: &[&Expr]) -> Vec<Binding> {
     let mut free: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in exprs {
@@ -200,11 +195,8 @@ fn free_vars(e: &Expr, out: &mut std::collections::HashSet<String>) {
 
 /// Read-over-write substitution for `a[i] := e`.
 ///
-/// A *constant* index replaces exactly that element. A *symbolic* index is
-/// handled by the exact bounded-array identity
-/// `a[j] → ite(j == i, e, a[j])` — after a write at `i`, reading `j` yields
-/// the new value iff `j == i`. This is how array assignment becomes a pure
-/// expression without inventing a theory of arrays.
+/// A constant index replaces that element; a symbolic index uses the identity
+/// `a[j] → ite(j == i, e, a[j])`.
 fn subst_array_write(e: &Expr, array: &str, index: &Expr, value: &Expr) -> Expr {
     match e {
         Expr::ArrayRead(n, j) if n == array => {
@@ -254,10 +246,7 @@ fn subst_array_write(e: &Expr, array: &str, index: &Expr, value: &Expr) -> Expr 
         ),
         Expr::Len(n) => Expr::Len(n.clone()),
         // Recurse into quantifier bodies too. An earlier version skipped them,
-        // reasoning that a bound variable might shadow the write's index —
-        // but the type checker already rejects shadowing, and skipping meant
-        // `forall i in 0..3: r[i] == ...` kept its OLD `r[i]` after the writes
-        // to `r`, so a correct program was accused of violating its contract.
+        // but that kept stale reads after writes to `r` and accused correct programs.
         Expr::Forall { var, lo, hi, body } => Expr::Forall {
             var: var.clone(),
             lo: Box::new(subst_array_write(lo, array, index, value)),
@@ -294,10 +283,7 @@ impl<'a> VcGen<'a> {
     }
 
     fn push(&mut self, kind: &str, location: String, assumptions: Vec<Expr>, goal: Expr) {
-        // Only the variables this obligation actually mentions need to range
-        // over their domains — an unmentioned variable cannot change the
-        // truth of the implication, and leaving it out keeps the state space
-        // small enough for the exhaustive engine to decide the obligation.
+        // Only mentioned variables range over their domains.
         let refs: Vec<&Expr> = assumptions.iter().chain(std::iter::once(&goal)).collect();
         let vars = scope_vars(self.spec, &refs);
         self.obligations.push(Obligation {
@@ -314,27 +300,8 @@ impl<'a> VcGen<'a> {
         self.wp_block_ctx(prog, post, &[])
     }
 
-    /// The same, given the facts that hold where the block starts.
-    ///
-    /// This is the frame rule, and it is what makes NESTED loops provable.
-    /// Without it an inner loop's exit obligation sees only the inner
-    /// invariant:
-    ///
-    /// ```text
-    ///   { j >= 0, j <= n + 1, !(j <= n) }  =>  (c + 1) == (i + 1)
-    /// ```
-    ///
-    /// where `c == i` came from the OUTER loop and the inner body touches
-    /// neither variable — so the obligation is unprovable and the engines
-    /// disagree (the exhaustive one runs the real program and proves it).
-    /// The textbook answer is "strengthen the inner invariant"; what working
-    /// verifiers do is carry the frame.
-    ///
-    /// Each fact is carried only while no statement in the *prefix* writes one
-    /// of its variables — that is exactly when it is still true. Computing the
-    /// prefix write-set once, before the backward walk, keeps this sound: a
-    /// fact is dropped the moment anything before this point could have
-    /// invalidated it.
+    /// This is the frame rule: an inner loop's exit obligation must see the
+    /// outer body's facts, or correct programs become unprovable.
     fn wp_block_ctx(&mut self, prog: &[Stmt], post: Expr, ctx: &[Expr]) -> Expr {
         // mods[i] = every variable written by prog[0..i].
         let mut mods: Vec<std::collections::HashSet<String>> =
@@ -420,28 +387,12 @@ impl<'a> VcGen<'a> {
                 );
 
                 // (2) Exit: frame ∧ I ∧ ¬guard ⇒ post.
-                //     The frame is the whole point of this clause: after an
-                //     INNER loop, `post` is the remainder of the OUTER body,
-                //     which typically mentions only variables this loop never
-                //     touched. Without them the exit obligation is unprovable
-                //     even for a correct program.
                 let not_guard = Expr::Unary(UnOp::Not, Box::new(cond.clone()));
                 exit_ctx.push(inv.clone());
                 exit_ctx.push(not_guard);
                 self.push("loop exit", loc.clone(), exit_ctx, post);
 
-                // (3) Termination, when a variant is given:
-                //     frame ∧ I ∧ guard ⇒ decreases > 0 ∧ variant_after_body < decreases
-                //
-                // `variant_after` substitutes through the body like the real
-                // execution would. A second full `wp` walk would be wrong here
-                // for two different reasons, both hit in development: it emits
-                // a nested loop's exit obligation with the *variant itself* as
-                // its post (asking an inner-loop exit to have already reached
-                // the post-body value of a number still being computed), and
-                // the loop rule returns only the invariant, so the variant
-                // would decay to the inner loop's invariant instead of
-                // `(n - (i + 1)) + 1`.
+                // (3) Termination: frame ∧ I ∧ guard ⇒ decreases > 0 ∧ variant_after_body < decreases.
                 if let Some(d) = decreases {
                     let after = variant_after(body, &d);
                     let decreased = Expr::Binary(
@@ -472,14 +423,8 @@ impl<'a> VcGen<'a> {
 
 /// How `d` reads after one execution of `body`.
 ///
-/// Substitutes forward, in execution order. Under the standard loop rule a
-/// nested loop is opaque — only its invariant survives — which is useless for
-/// a variant such as `(n - i) + 1` that the inner loop never touches: the
-/// variant decays to the inner loop's invariant and termination becomes
-/// unprovable for a perfectly correct program. So a loop that writes none of
-/// the variant's variables is treated as the identity on it — that is exactly
-/// what the frame rule buys — and falls back to the invariant only when the
-/// loop genuinely can change the variant.
+/// A loop that writes none of the variant's variables is the identity on it;
+/// otherwise it falls back to the invariant.
 fn variant_after(body: &[Stmt], d: &Expr) -> Expr {
     let mut q = d.clone();
     for s in body {
@@ -545,19 +490,16 @@ fn stmt_writes(s: &Stmt, out: &mut std::collections::HashSet<String>) {
 
 /// Generate every obligation for a spec + program.
 ///
-/// The first obligation is always the top-level contract:
-/// `requires ⇒ wp(program, ensures)`.
+/// The contract obligation is `requires ⇒ wp(program, ensures)`, quantified
+/// over exactly its free variables.
 pub fn obligations(spec: &Spec, prog: &Program) -> Vec<Obligation> {
     let mut gen = VcGen::new(spec);
     let post = conjoin(spec.ensures.clone());
     let wp = gen.wp_block(prog, post);
     let mut obs = gen.obligations;
 
-    // The contract obligation is `requires ⇒ wp(program, ensures)`. The
-    // weakest precondition mentions whatever the program touches — locals
-    // included — so it is quantified over exactly its free variables. That
-    // is both correct and minimal: an unmentioned variable cannot change the
-    // truth of the implication.
+    // The contract obligation quantifies over exactly the free variables of the
+    // weakest precondition.
     let mut free = std::collections::HashSet::new();
     for e in &spec.requires {
         free_vars(e, &mut free);

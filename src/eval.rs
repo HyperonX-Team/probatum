@@ -171,7 +171,7 @@ pub fn eval(e: &Expr, env: &Env) -> Result<Value, Fault> {
             let y = eval(b, env)?.as_int().ok_or(Fault::TypeMismatch("max"))?;
             Ok(Value::Int(x.max(y)))
         }
-        // ---- arrays -------------------------------------------------------
+        // arrays
         Expr::ArrayRead(name, index) => {
             let i = eval(index, env)?
                 .as_int()
@@ -201,7 +201,7 @@ pub fn eval(e: &Expr, env: &Env) -> Result<Value, Fault> {
             Ok(Value::Int(contents.len() as i64))
         }
 
-        // ---- quantifiers and folds ----------------------------------------
+        // quantifiers and folds
         Expr::Forall { var, lo, hi, body } => {
             let (l, h) = eval_bounds(lo, hi, env)?;
             for i in l..=h {
@@ -458,9 +458,7 @@ pub fn check_contract(
     Ok(false) // in domain, all clauses held
 }
 
-// ---------------------------------------------------------------------------
 // The program machine: statements, control flow, arrays
-// ---------------------------------------------------------------------------
 
 /// How many statement-steps a single execution may take before we declare
 /// non-termination. High enough for any loop over a bounded domain, low

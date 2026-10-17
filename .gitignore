@@ -1,9 +1,2 @@
-/target
-/build
-/final
-/probe
-*.rlib
-*.txt
-**/*.rs.bk
-# local scratch specs from development
-est/
+dc/
+target/
